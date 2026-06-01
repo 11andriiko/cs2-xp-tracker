@@ -203,7 +203,7 @@ def print_progress(cur_abs: int, gained_basic: int):
     print(f"    2x zone:  {z2:,} / {BASIC_2X:,} basic  ({z2*2:,} / {BASIC_2X*2:,} raw)")
     print(f"    1x zone:  {z1:,} / {BASIC_1X:,} basic  ({z1:,} / {BASIC_1X:,} raw)")
     print(f"  Left until overload:  {left_basic:,} basic  ({left_raw:,} raw) "
-          f"— {left_pct:.1f}% ≈ {hm(left_raw / 20)}")
+          f"— {left_pct:.1f}% ≈ {hm(left_raw / 7.5)} ≈ {left_raw/75:.1f} deathmatches")
     print(f"  At overload you will be:  Medal {mstr(ol_medal)}  Rank {ol_rank}  XP {ol_xp:,}")
 
 
@@ -334,7 +334,7 @@ def main():
         basic_eq    = per_week / 0.175
         print(f"  Gap to Pink:  {gap:,} XP over {len(grind_weeks)} weeks")
         print(f"  → Need {per_week:,.0f} raw reduced XP/week  "
-              f"({basic_eq:,.0f} basic eq  ≈ {hm(basic_eq / 20)}/week)")
+              f"({basic_eq:,.0f} basic eq  ≈ {hm(basic_eq / 20)}/week) ≈ {basic_eq/200:.1f} deathmatches/week")
     else:
         print(f"  ✓ On track to reach Pink Medal!")
 
