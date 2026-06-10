@@ -153,11 +153,10 @@ def ensure_week_exists(data, week):
     return data
 
 # ─────────────────────────────
-# STATUS
+# STATUS LOGIC (shared)
 # ─────────────────────────────
 
-@app.command()
-def status():
+def run_status():
     data = load()
     w = week_now()
     data = ensure_week_exists(data, w)
@@ -174,9 +173,7 @@ def status():
     t2 = BASIC_4X + BASIC_2X
     t1 = BASIC_CAP
 
-    # remaining
-    rem4 = max(0, t4 - basic)
-    rem2 = max(0, t2 - basic)
+    # remaining to 1x cap
     rem1 = max(0, t1 - basic)
 
     # mission
@@ -185,51 +182,85 @@ def status():
     m_pct = (m_cur / m_max * 100) if m_max else 0
 
     # approximations
-    dm_played = basic / DM_XP
+    dm_played   = basic / DM_XP
     comp_played = basic / COMP_XP
-
-    dm_need = rem1 / DM_XP
-    comp_need = rem1 / COMP_XP
+    dm_need     = rem1 / DM_XP
+    comp_need   = rem1 / COMP_XP
 
     # time
-    dm_time_spent = dm_played * DM_TIME
-    dm_time_need = dm_need * DM_TIME
+    dm_time_spent  = dm_played   * DM_TIME
+    dm_time_need   = dm_need     * DM_TIME
     comp_time_spent = comp_played * COMP_TIME
-    comp_time_need = comp_need * COMP_TIME
-
-    # rank
-    xp_to_rank = XP_PER_RANK - row["xp"]
+    comp_time_need  = comp_need   * COMP_TIME
 
     # ───────── OVERLOAD PROJECTION ─────────
-    xp_now_total, _, _ = compute_xp(basic)
+    xp_now_total,   _, _ = compute_xp(basic)
     xp_after_total, _, _ = compute_xp(basic + rem1)
 
     gained_to_overload = xp_after_total - xp_now_total
     future_abs = row["abs_xp"] + gained_to_overload
 
-    future_medal = future_abs // XP_PER_MEDAL
-    rem_after_medal = future_abs % XP_PER_MEDAL
-
-    future_rank = rem_after_medal // XP_PER_RANK + 1
-    future_xp = rem_after_medal % XP_PER_RANK
+    future_medal      = future_abs // XP_PER_MEDAL
+    rem_after_medal   = future_abs % XP_PER_MEDAL
+    future_rank       = rem_after_medal // XP_PER_RANK + 1
+    future_xp         = rem_after_medal % XP_PER_RANK
 
     # ───────── PRINT ─────────
 
     console.print(Panel.fit(f"[bold cyan]Week {w}[/bold cyan]"))
-    
+
     console.print("\n[bold]Current XP Status[/bold]")
     console.print(f"Medal: {row['medal']} | Rank: {row['rank']} | XP: {row['xp']}")
     console.print("[bold]At XP Overload[/bold]")
     console.print(f"Medal: {future_medal} | Rank: {future_rank} | XP: {future_xp}")
 
+    # ───────── XP Progress (aligned) ─────────
+    console.print("\n[bold]XP Progress[/bold]")
+
+    if stage == "4x":
+        stage_cur = basic
+        stage_cap = BASIC_4X
+    elif stage == "2x":
+        stage_cur = basic - BASIC_4X
+        stage_cap = BASIC_2X
+    elif stage == "1x":
+        stage_cur = basic - BASIC_4X - BASIC_2X
+        stage_cap = BASIC_1X
+    else:
+        stage_cur = basic
+        stage_cap = BASIC_CAP
+
+    # Build the numeric parts first so we can measure their width
+    stage_nums   = f"{int(stage_cur)}/{int(stage_cap)}"
+    total_nums   = f"{int(basic)}/{t1}"
+    mission_nums = f"{m_cur}/{m_max}"
+
+    stage_pct   = f"({(stage_cur / stage_cap) * 100:.1f}%)" if stage_cap else "(0.0%)"
+    total_pct   = f"({(basic / t1) * 100:.1f}%)"
+    mission_pct = f"({m_pct:.1f}%)"
+
+    # fixed widths for alignment
+    W_NUMS = max(len(stage_nums), len(total_nums), len(mission_nums))
+    W_PCT  = max(len(stage_pct),  len(total_pct),  len(mission_pct))
+
+    console.print(
+        f"Stage XP   : {stage_nums:<{W_NUMS}} {stage_pct:<{W_PCT}} {bar(stage_cur, stage_cap)}"
+    )
+    console.print(
+        f"Total XP   : {total_nums:<{W_NUMS}} {total_pct:<{W_PCT}} {bar(basic, t1)}"
+    )
+    console.print(
+        f"Mission XP : {mission_nums:<{W_NUMS}} {mission_pct:<{W_PCT}} {bar(m_cur, m_max)}"
+    )
+
     console.print(f"\n[bold green]Current Stage:[/bold green] {stage}")
+
     # ───────── 4x ─────────
     earned4_basic = min(basic, BASIC_4X)
-    earned4_xp = earned4_basic * 4
+    earned4_xp    = earned4_basic * 4
     if stage == "4x":
         left_basic = BASIC_4X - basic
-        left_xp = left_basic * 4
-        pct = (basic / BASIC_4X) * 100
+        left_xp    = left_basic * 4
         console.print(
             f"4x : Earned: {int(earned4_xp)} XP ({int(earned4_basic)} Basic XP) | "
             f"Left: {int(left_xp)} XP ({int(left_basic)} Basic XP)"
@@ -241,11 +272,10 @@ def status():
 
     # ───────── 2x ─────────
     earned2_basic = max(0, min(basic - BASIC_4X, BASIC_2X))
-    earned2_xp = earned2_basic * 2
+    earned2_xp    = earned2_basic * 2
     if stage == "2x":
         left_basic = BASIC_2X - earned2_basic
-        left_xp = left_basic * 2
-        pct = (earned2_basic / BASIC_2X) * 100
+        left_xp    = left_basic * 2
         console.print(
             f"2x : Earned: {int(earned2_xp)} XP ({int(earned2_basic)} Basic XP) | "
             f"Left: {int(left_xp)} XP ({int(left_basic)} Basic XP)"
@@ -263,15 +293,12 @@ def status():
     earned1_basic = max(0, min(basic - BASIC_4X - BASIC_2X, BASIC_1X))
     if stage == "1x":
         left_basic = BASIC_1X - earned1_basic
-        pct = (earned1_basic / BASIC_1X) * 100
         console.print(
             f"1x : Earned: {int(earned1_basic)} XP ({int(earned1_basic)} Basic XP) | "
             f"Left: {int(left_basic)} Basic XP"
         )
     elif basic <= BASIC_4X + BASIC_2X:
-        console.print(
-            f"[dim]1x : Left: {BASIC_1X} Basic XP[/dim]"
-        )
+        console.print(f"[dim]1x : Left: {BASIC_1X} Basic XP[/dim]")
     else:
         console.print(
             f"[dim]1x : Earned: {int(earned1_basic)} XP ({int(earned1_basic)} Basic XP)[/dim]"
@@ -285,97 +312,72 @@ def status():
             f"0.175x : Earned: {int(reduced_xp)} XP (~{int(extra_basic)} Basic XP)"
         )
 
-    console.print("\n[bold]Progress[/bold]")
-    # basic progress within stage and total
-    stage_cap = {
-        "4x": BASIC_4X,
-        "2x": BASIC_2X,
-        "1x": BASIC_1X,
-        "0.175x": BASIC_CAP
-    }[stage]
-    if stage == "4x":
-        stage_cur = basic
-    elif stage == "2x":
-        stage_cur = basic - BASIC_4X
-    elif stage == "1x":
-        stage_cur = basic - BASIC_4X - BASIC_2X
-    else:
-        stage_cur = basic
-    console.print(
-        f"Stage XP   : {int(stage_cur)}/{int(stage_cap)} "
-        f"({(stage_cur/stage_cap)*100:.1f}%) {bar(stage_cur, stage_cap)}"
-    )
-    console.print(
-        f"Total XP   : {basic:.0f}/{t1} ({(basic/t1)*100:.1f}%) {bar(basic, t1)}"
-    )
-    console.print(
-        f"Mission XP : {m_cur}/{m_max} ({m_pct:.1f}%) {bar(m_cur, m_max)}"
-    )
-
+    # ───────── Playtime ─────────
     console.print("\n[bold]Playtime Estimation[/bold]")
-    console.print(
-        f"DM   : Played: {dm_played:.1f} (~{dm_time_spent:.1f} min or ~{dm_time_spent/60:.1f} hr)  |  "
-        f"Left: {dm_need:.1f} (~{dm_time_need:.1f} min or ~{dm_time_need/60:.1f} hr)"
-    )
-    console.print(
-        f"Comp : Played: {comp_played:.1f} (~{comp_time_spent:.1f} min or ~{comp_time_spent/60:.1f} hr)  |  "
-        f"Left: {comp_need:.1f} (~{comp_time_need:.1f} min or ~{comp_time_need/60:.1f} hr)"
-    )
+
+    # Collect the four raw float triples: (games, minutes, hours)
+    _pt = [
+        (dm_played,   dm_time_spent,   dm_time_spent   / 60),
+        (dm_need,     dm_time_need,    dm_time_need    / 60),
+        (comp_played, comp_time_spent, comp_time_spent / 60),
+        (comp_need,   comp_time_need,  comp_time_need  / 60),
+    ]
+
+    # Pre-render each float with its format so we can measure widths
+    _games_s = [f"{g:.1f}"  for g, _m, _h in _pt]
+    _min_s   = [f"{m:.1f}"  for _g, m, _h in _pt]
+    _hr_s    = [f"{h:.1f}"  for _g, _m, h in _pt]
+
+    W_G = max(len(s) for s in _games_s)
+    W_M = max(len(s) for s in _min_s)
+    W_H = max(len(s) for s in _hr_s)
+
+    def pt_cell(i):
+        return (f"{_games_s[i]:>{W_G}} "
+                f"(~{_min_s[i]:>{W_M}} min or "
+                f"~{_hr_s[i]:>{W_H}} hr)")
+
+    console.print(f"DM   : Played: {pt_cell(0)}  |  Left: {pt_cell(1)}")
+    console.print(f"Comp : Played: {pt_cell(2)}  |  Left: {pt_cell(3)}")
 
     # ───────── TARGET: RANK-UP / WEEKLY DROP ─────────
-
-    # detect weekly drop
     is_weekly = (row["rank"] == prev["rank"] and row["medal"] == prev["medal"])
     console.print("\n[bold]To Weekly Drop[/bold]" if is_weekly else "\n[bold]To Rank-Up[/bold]")
     xp_needed = XP_PER_RANK - row["xp"]
 
-    # simulate earning XP
     sim_basic = basic
-    sim_xp = 0
-
+    sim_xp    = 0
     while sim_xp < xp_needed:
-        gained, _, sim_stage = compute_xp(sim_basic + 1)
-        gained_prev, _, _ = compute_xp(sim_basic)
-        delta = gained - gained_prev
-        sim_xp += delta
+        gained,      _, sim_stage = compute_xp(sim_basic + 1)
+        gained_prev, _, _         = compute_xp(sim_basic)
+        sim_xp    += gained - gained_prev
         sim_basic += 1
 
-    # mission impact
-    mission_left = max(0, m_max - m_cur)
-    # ───────── OUTPUT ─────────
+    mission_left             = max(0, m_max - m_cur)
+    basic_needed_no_mission  = sim_basic - basic
+    dm_needed_nm             = basic_needed_no_mission / DM_XP
+    comp_needed_nm           = basic_needed_no_mission / COMP_XP
+    dm_time_nm               = dm_needed_nm   * DM_TIME
+    comp_time_nm             = comp_needed_nm * COMP_TIME
 
-    basic_needed_no_mission = sim_basic - basic
+    console.print(f"XP needed  : {xp_needed} XP (~{int(basic_needed_no_mission)} Basic XP)")
+    console.print(f"Stage Flow : {stage} → {sim_stage}")
 
-    # playtime (no mission)
-    dm_needed_nm = basic_needed_no_mission / DM_XP
-    comp_needed_nm = basic_needed_no_mission / COMP_XP
-    dm_time_nm = dm_needed_nm * DM_TIME
-    comp_time_nm = comp_needed_nm * COMP_TIME
-    console.print(
-        f"XP needed  : {xp_needed} XP (~{int(basic_needed_no_mission)} Basic XP)"
-    )
-    console.print(
-        f"Stage Flow : {stage} → {sim_stage}"
-    )
-
-    # ───────── WITH / WITHOUT MISSION ─────────
     if mission_left > 0:
         xp_after_mission = max(0, xp_needed - mission_left)
-        # simulate AGAIN but with mission reducing needed XP
         sim_basic_m = basic
-        sim_xp_m = 0
+        sim_xp_m    = 0
         while sim_xp_m < xp_after_mission:
-            gained, _, _ = compute_xp(sim_basic_m + 1)
+            gained,      _, _ = compute_xp(sim_basic_m + 1)
             gained_prev, _, _ = compute_xp(sim_basic_m)
-            sim_xp_m += (gained - gained_prev)
+            sim_xp_m    += gained - gained_prev
             sim_basic_m += 1
 
         basic_needed_with_mission = sim_basic_m - basic
-        # playtime (with mission)
-        dm_needed_m = basic_needed_with_mission / DM_XP
+        dm_needed_m   = basic_needed_with_mission / DM_XP
         comp_needed_m = basic_needed_with_mission / COMP_XP
-        dm_time_m = dm_needed_m * DM_TIME
-        comp_time_m = comp_needed_m * COMP_TIME
+        dm_time_m     = dm_needed_m   * DM_TIME
+        comp_time_m   = comp_needed_m * COMP_TIME
 
         console.print(
             f"Left without mission : ~{int(basic_needed_no_mission)} Basic XP | "
@@ -395,106 +397,384 @@ def status():
         )
 
 # ─────────────────────────────
-# UPDATE / DELETE / TABLE
+# UPDATE LOGIC (shared)
 # ─────────────────────────────
 
-@app.command()
-def update():
+def run_update(mode="full"):
+    """
+    mode: "full"    → ask medal, rank, xp, mission
+          "medal"   → ask medal, rank, xp  (no mission)
+          "rank"    → ask rank, xp         (medal stays, no mission)
+          "xp"      → ask xp only          (rank & medal stay, no mission)
+          "mission" → ask mission XP only
+    """
     data = load()
-    w = week_now()
+    w    = week_now()
     data = ensure_week_exists(data, w)
-    row = data[str(w)]
+    row  = data[str(w)]
 
-    medal = typer.prompt("Medal", default=row["medal"])
-    rank = typer.prompt("Rank", default=row["rank"])
-    xp = typer.prompt("XP", default=row["xp"])
-    mission = typer.prompt("Mission XP", default=row["mission_actual"])
+    # snapshot of values before any changes
+    old_medal   = row["medal"]
+    old_rank    = row["rank"]
+    old_xp      = row["xp"]
+    old_mission = row["mission_actual"]
 
-    abs_xp = to_abs(medal, rank, xp)
+    new_medal   = old_medal
+    new_rank    = old_rank
+    new_xp      = old_xp
+    new_mission = old_mission
+
+    # ── FULL (default, no arg) ──
+    if mode == "full":
+        raw       = input(f"Medal [{old_medal}]: ").strip()
+        new_medal = int(raw) if raw else old_medal
+
+        raw      = input(f"Rank [{old_rank}]: ").strip()
+        new_rank = int(raw) if raw else old_rank
+
+        raw     = input(f"XP [{old_xp}]: ").strip()
+        new_xp  = int(raw) if raw else old_xp
+
+        raw         = input(f"Mission XP [{old_mission}]: ").strip()
+        new_mission = int(raw) if raw else old_mission
+
+    # ── MEDAL level ──
+    elif mode == "medal":
+        raw       = input(f"Medal [{old_medal}]: ").strip()
+        new_medal = int(raw) if raw else old_medal
+
+        if new_medal < old_medal:
+            console.print(
+                f"[yellow]⚠  Medal {new_medal} is lower than current {old_medal}.[/yellow]\n"
+                f"[yellow]   Are you sure? (yes/no)[/yellow]"
+            )
+            if input("> ").strip().lower() not in ("yes", "y"):
+                console.print("[red]Update cancelled.[/red]")
+                return
+
+        raw      = input(f"Rank [{old_rank}]: ").strip()
+        new_rank = int(raw) if raw else old_rank
+
+        raw    = input(f"XP [{old_xp}]: ").strip()
+        new_xp = int(raw) if raw else old_xp
+
+    # ── RANK level ──
+    elif mode == "rank":
+        raw      = input(f"Rank [{old_rank}]: ").strip()
+        new_rank = int(raw) if raw else old_rank
+
+        if new_rank < old_rank:
+            console.print(
+                f"[yellow]⚠  Rank {new_rank} is lower than current {old_rank}.[/yellow]\n"
+                f"[yellow]   Are you sure? (yes/no)[/yellow]"
+            )
+            if input("> ").strip().lower() not in ("yes", "y"):
+                console.print("[red]Update cancelled.[/red]")
+                return
+
+        raw    = input(f"XP [{old_xp}]: ").strip()
+        new_xp = int(raw) if raw else old_xp
+
+    # ── XP level ──
+    elif mode == "xp":
+        raw    = input(f"XP [{old_xp}]: ").strip()
+        new_xp = int(raw) if raw else old_xp
+
+        if new_xp < old_xp:
+            console.print(
+                f"[yellow]⚠  XP {new_xp} is lower than current {old_xp}.[/yellow]\n"
+                f"[yellow]   Did you mean to update rank as well? Try 'u -rank'.[/yellow]\n"
+                f"[yellow]   Continue anyway? (yes/no)[/yellow]"
+            )
+            if input("> ").strip().lower() not in ("yes", "y"):
+                console.print("[red]Update cancelled.[/red]")
+                return
+
+    # ── MISSION only ──
+    elif mode == "mission":
+        raw         = input(f"Mission XP [{old_mission}]: ").strip()
+        new_mission = int(raw) if raw else old_mission
+
+        if new_mission < old_mission:
+            console.print(
+                f"[yellow]⚠  Mission XP {new_mission} is lower than current {old_mission}.[/yellow]\n"
+                f"[yellow]   Continue anyway? (yes/no)[/yellow]"
+            )
+            if input("> ").strip().lower() not in ("yes", "y"):
+                console.print("[red]Update cancelled.[/red]")
+                return
+
+    # ── Nothing changed? ──
+    if (new_medal == old_medal and new_rank == old_rank
+            and new_xp == old_xp and new_mission == old_mission):
+        console.print("[dim]No changes made.[/dim]")
+        return
+
+    # ── Compute and save ──
+    abs_xp   = to_abs(new_medal, new_rank, new_xp)
     prev_abs = data.get(str(w - 1), {}).get("abs_xp", abs_xp)
 
-    gained_total = max(0, abs_xp - prev_abs - mission)
-    basic = reverse_basic_from_total(gained_total)
-
+    gained_total = max(0, abs_xp - prev_abs - new_mission)
+    basic        = reverse_basic_from_total(gained_total)
     _, reduced, _ = compute_xp(basic)
 
     row.update({
-        "abs_xp": abs_xp,
-        "rank": rank,
-        "xp": xp,
-        "medal": medal,
-        "basic_xp": int(basic),
-        "reduced_xp": int(reduced),
-        "mission_actual": mission
+        "abs_xp":         abs_xp,
+        "rank":           new_rank,
+        "xp":             new_xp,
+        "medal":          new_medal,
+        "basic_xp":       int(basic),
+        "reduced_xp":     int(reduced),
+        "mission_actual": new_mission
     })
 
     save(data)
-    print("[green]Updated[/green]")
+    console.print(
+        f"[green]✓ Saved:[/green] "
+        f"Medal: {new_medal} | Rank: {new_rank} | XP: {new_xp} | Mission: {new_mission}"
+    )
 
-@app.command()
-def delete():
+# ─────────────────────────────
+# DELETE / TABLE LOGIC (shared)
+# ─────────────────────────────
+
+def run_delete():
     data = load()
-    week = typer.prompt("Week")
+    week = input("Week to delete: ").strip()
 
     if week not in data:
-        print("[red]Not found[/red]")
+        console.print("[red]Not found[/red]")
         return
 
-    if typer.confirm(f"Delete week {week}?"):
+    confirm = input(f"Delete week {week}? (yes/no): ").strip().lower()
+    if confirm in ("yes", "y"):
         del data[week]
         save(data)
-        print("[yellow]Deleted[/yellow]")
+        console.print("[yellow]Deleted[/yellow]")
+    else:
+        console.print("[dim]Cancelled.[/dim]")
 
-@app.command()
-def table():
+def run_table():
     data = load()
 
-    table = Table(title="CS2 XP Data")
+    t = Table(title="CS2 XP Data")
 
     cols = [
-        "week","abs_xp","rank","xp","medal",
-        "basic_xp","reduced_xp",
-        "mission_actual","mission_max",
-        "date_start","date_end"
+        "week", "abs_xp", "rank", "xp", "medal",
+        "basic_xp", "reduced_xp",
+        "mission_actual", "mission_max",
+        "date_start", "date_end"
     ]
 
     for c in cols:
-        table.add_column(c)
+        t.add_column(c)
 
     for w in sorted(data.keys(), key=int):
         r = data[w]
-        table.add_row(*(str(r[c]) if c != "week" else w for c in cols))
+        t.add_row(*(str(r[c]) if c != "week" else w for c in cols))
 
-    console.print(table)
+    console.print(t)
+
+# ─────────────────────────────
+# HELP
+# ─────────────────────────────
+
+HELP_TEXT = """
+[bold cyan]CS2 XP Tracker — Help[/bold cyan]
+
+[bold]Commands[/bold]
+
+  [cyan]status[/cyan]  /  [cyan]s[/cyan]  /  [cyan]stat[/cyan]
+      Show current week's XP progress, stage breakdown,
+      playtime estimates, and rank-up / weekly drop targets.
+
+  [cyan]update[/cyan]  /  [cyan]u[/cyan]  /  [cyan]upd[/cyan]  [-medal | -rank | -xp | -mission]
+      Update this week's data.  Default (no argument) asks for
+      medal → rank → xp → mission in order.
+
+      Arguments let you enter only what changed:
+        [cyan]u -medal[/cyan] / [cyan]-med[/cyan]   update medal, rank, xp
+        [cyan]u -rank[/cyan] / [cyan]-r[/cyan]      update rank, xp
+        [cyan]u -xp[/cyan]             update xp only
+        [cyan]u -mission[/cyan] / [cyan]-mis[/cyan] update mission XP only
+
+  [cyan]delete[/cyan]  /  [cyan]d[/cyan]  /  [cyan]del[/cyan]
+      Delete a week's data by number.
+
+  [cyan]table[/cyan]  /  [cyan]t[/cyan]
+      Display all stored weeks in a table.
+
+  [cyan]help[/cyan]  /  [cyan]h[/cyan]
+      Show this help message.
+
+  [cyan]exit[/cyan]  /  [cyan]quit[/cyan]  /  [cyan]stop[/cyan]  /  [cyan]e[/cyan]  /  [cyan]q[/cyan]
+      Exit the tracker.
+
+[bold]Notes[/bold]
+  • Commands are case-insensitive: [cyan]S[/cyan], [cyan]STATUS[/cyan], [cyan]status[/cyan] all work.
+  • Square brackets in prompts show the current stored value.
+    Press Enter to keep it unchanged.
+"""
+
+def run_help():
+    console.print(Panel(HELP_TEXT.strip(), expand=False))
 
 # ─────────────────────────────
 # INTERACTIVE
 # ─────────────────────────────
 
+COMMAND_MAP = {
+    # status
+    "status": ("status", None),
+    "s":      ("status", None),
+    "stat":   ("status", None),
+    # update
+    "update": ("update", "full"),
+    "u":      ("update", "full"),
+    "upd":    ("update", "full"),
+    # delete
+    "delete": ("delete", None),
+    "d":      ("delete", None),
+    "del":    ("delete", None),
+    # table
+    "table":  ("table",  None),
+    "t":      ("table",  None),
+    # help
+    "help":   ("help",   None),
+    "h":      ("help",   None),
+    # exit
+    "exit":   ("exit",   None),
+    "quit":   ("exit",   None),
+    "stop":   ("exit",   None),
+    "e":      ("exit",   None),
+    "q":      ("exit",   None),
+}
+
+# Valid arguments per canonical command → {arg_string: mode}
+COMMAND_ARGS = {
+    "update": {
+        "-medal":   "medal",
+        "-med":     "medal",
+        "-rank":    "rank",
+        "-r":       "rank",
+        "-xp":      "xp",
+        "-mission": "mission",
+        "-mis":     "mission",
+    },
+    "status": {},
+    "delete": {},
+    "table":  {},
+    "help":   {},
+    "exit":   {},
+}
+
+# Map every alias to its canonical command name
+_VERB_TO_CMD = {alias: cmd for alias, (cmd, _) in COMMAND_MAP.items()}
+
+def parse_command(raw: str):
+    """
+    Returns (command, mode, error_msg) where error_msg is None on success.
+    Handles: "status", "s", "u -xp", "UPDATE -RANK", "u -bad", "s -bad",
+             "u -xp -medal" (too many args) etc.
+    """
+    parts = raw.strip().lower().split()
+    if not parts:
+        return None, None, None
+
+    verb = parts[0]
+    args = parts[1:]   # everything after the verb
+
+    # unknown verb
+    cmd = _VERB_TO_CMD.get(verb)
+    if cmd is None:
+        return None, None, f"[red]Unknown command: '{raw}'. Type 'help' or 'h' for usage.[/red]"
+
+    valid_args = COMMAND_ARGS.get(cmd, {})
+
+    # no argument → default mode
+    if not args:
+        default_mode = "full" if cmd == "update" else None
+        return cmd, default_mode, None
+
+    # more than one argument → always an error
+    if len(args) > 1:
+        return None, None, (
+            f"[red]Too many arguments for '{verb}' (only one argument allowed).[/red]"
+        )
+
+    arg = args[0]
+
+    # argument given but this command accepts none
+    if not valid_args:
+        return None, None, (
+            f"[red]Command '{verb}' does not accept arguments (got '{arg}').[/red]"
+        )
+
+    # valid argument
+    if arg in valid_args:
+        return cmd, valid_args[arg], None
+
+    # unrecognised argument
+    valid_list = "  ".join(k for k in valid_args)
+    return None, None, (
+        f"[red]Unknown argument '{arg}' for '{verb}'.[/red]\n"
+        f"[red]Valid arguments: {valid_list}[/red]"
+    )
+
+
 def interactive():
     console.print(Panel.fit(
         "[bold cyan]🎯 CS2 XP Tracker[/bold cyan]\n\n"
-        "status | update | delete | table | exit"
+        "Track your weekly XP progress in CS2.\n\n"
+        "Quick start:\n"
+        "  [cyan]status[/cyan]  – see current week's progress\n"
+        "  [cyan]update[/cyan]  – enter your latest XP\n"
+        "  [cyan]help[/cyan]    – show all commands\n"
+        "  [cyan]exit[/cyan]    – quit\n\n"
+        "[dim]Commands have single-letter shortcuts: s / u / d / t / h / e[/dim]"
     ))
 
     while True:
         try:
-            cmd = pt_prompt("[cs2xp] > ").strip() if USE_PROMPT_TOOLKIT else input("[cs2xp] > ").strip()
+            raw = (
+                pt_prompt("[cs2xp] > ").strip()
+                if USE_PROMPT_TOOLKIT
+                else input("[cs2xp] > ").strip()
+            )
 
-            if cmd in ("exit","quit"):
-                break
-
-            if cmd == "help":
-                print("status, update, delete, table, exit")
+            if not raw:
                 continue
 
-            try:
-                app(args=cmd.split(), standalone_mode=False)
-            except SystemExit:
-                pass
+            cmd, mode, err = parse_command(raw)
 
+            if err is not None:
+                console.print(err)
+                continue
+
+            if cmd is None:
+                continue
+
+            if cmd == "exit":
+                console.print("[dim]Session closed.[/dim]")
+                break
+
+            if cmd == "status":
+                run_status()
+            elif cmd == "update":
+                run_update(mode or "full")
+            elif cmd == "delete":
+                run_delete()
+            elif cmd == "table":
+                run_table()
+            elif cmd == "help":
+                run_help()
+
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Session closed.[/dim]")
+            break
         except Exception as e:
-            print(f"[red]{e}[/red]")
+            console.print(f"[red]Error: {e}[/red]")
+
 
 if __name__ == "__main__":
     interactive()
