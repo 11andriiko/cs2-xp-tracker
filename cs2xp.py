@@ -165,7 +165,6 @@ def status():
     row = data[str(w)]
     prev = data.get(str(w - 1), row)
 
-    gained_total = (row["abs_xp"] - prev["abs_xp"]) - row["mission_actual"]
     basic = row["basic_xp"]
 
     total, reduced, stage = compute_xp(basic)
@@ -180,50 +179,128 @@ def status():
     rem2 = max(0, t2 - basic)
     rem1 = max(0, t1 - basic)
 
-    # %
-    p4 = basic / t4 * 100 if t4 else 0
-    p2 = basic / t2 * 100 if t2 else 0
-    p1 = basic / t1 * 100 if t1 else 0
-
     # mission
     m_cur = row["mission_actual"]
     m_max = row["mission_max"]
     m_pct = (m_cur / m_max * 100) if m_max else 0
 
-    # games
+    # approximations
     dm_played = basic / DM_XP
     comp_played = basic / COMP_XP
 
     dm_need = rem1 / DM_XP
     comp_need = rem1 / COMP_XP
 
+    # time
+    dm_time_spent = dm_played * DM_TIME
+    dm_time_need = dm_need * DM_TIME
+    comp_time_spent = comp_played * COMP_TIME
+    comp_time_need = comp_need * COMP_TIME
+
     # rank
     xp_to_rank = XP_PER_RANK - row["xp"]
 
+    # ───────── OVERLOAD PROJECTION ─────────
+    xp_now_total, _, _ = compute_xp(basic)
+    xp_after_total, _, _ = compute_xp(basic + rem1)
+
+    gained_to_overload = xp_after_total - xp_now_total
+    future_abs = row["abs_xp"] + gained_to_overload
+
+    future_medal = future_abs // XP_PER_MEDAL
+    rem_after_medal = future_abs % XP_PER_MEDAL
+
+    future_rank = rem_after_medal // XP_PER_RANK + 1
+    future_xp = rem_after_medal % XP_PER_RANK
+
+    # ───────── PRINT ─────────
+
     console.print(Panel.fit(f"[bold cyan]Week {w}[/bold cyan]"))
+    
+    console.print("\n[bold]Current XP Status[/bold]")
+    console.print(f"Medal: {row['medal']} | Rank: {row['rank']} | XP: {row['xp']}")
+    console.print("[bold]At XP Overload[/bold]")
+    console.print(f"Medal: {future_medal} | Rank: {future_rank} | XP: {future_xp}")
 
-    console.print(f"\n[green]Stage:[/green] {stage}")
+    console.print(f"\n[green]Current Stage:[/green] {stage}")
 
-    console.print("\n[bold]Basic XP[/bold]")
-    console.print(f"{basic:.0f}/{t1} ({p1:.1f}%) {bar(basic, t1)}")
+    # ───────── 4x ─────────
+    earned4_basic = min(basic, BASIC_4X)
+    earned4_xp = earned4_basic * 4
+    if stage == "4x":
+        left_basic = BASIC_4X - basic
+        left_xp = left_basic * 4
+        pct = (basic / BASIC_4X) * 100
+        console.print(
+            f"4x : Earned: {int(earned4_xp)} XP ({int(earned4_basic)} Basic XP) | "
+            f"Left: {int(left_xp)} XP ({int(left_basic)} Basic XP) | "
+            f"{pct:.1f}% {bar(earned4_basic, BASIC_4X)}"
+        )
+    else:
+        console.print(
+            f"[dim]4x : Earned: {int(earned4_xp)} XP ({int(earned4_basic)} Basic XP)[/dim]"
+        )
 
-    console.print("\n[bold]Mission[/bold]")
+    # ───────── 2x ─────────
+    earned2_basic = max(0, min(basic - BASIC_4X, BASIC_2X))
+    earned2_xp = earned2_basic * 2
+    if stage == "2x":
+        left_basic = BASIC_2X - earned2_basic
+        left_xp = left_basic * 2
+        pct = (earned2_basic / BASIC_2X) * 100
+        console.print(
+            f"2x : Earned: {int(earned2_xp)} XP ({int(earned2_basic)} Basic XP) | "
+            f"Left: {int(left_xp)} XP ({int(left_basic)} Basic XP) | "
+            f"{pct:.1f}% {bar(earned2_basic, BASIC_2X)}"
+        )
+    elif basic <= BASIC_4X:
+        console.print(
+            f"[dim]2x : Left: {BASIC_2X * 2} XP ({BASIC_2X} Basic XP)[/dim]"
+        )
+    else:
+        console.print(
+            f"[dim]2x : Earned: {int(earned2_xp)} XP ({int(earned2_basic)} Basic XP)[/dim]"
+        )
+
+    # ───────── 1x ─────────
+    earned1_basic = max(0, min(basic - BASIC_4X - BASIC_2X, BASIC_1X))
+    if stage == "1x":
+        left_basic = BASIC_1X - earned1_basic
+        pct = (earned1_basic / BASIC_1X) * 100
+        console.print(
+            f"1x : Earned: {int(earned1_basic)} XP ({int(earned1_basic)} Basic XP) | "
+            f"Left: {int(left_basic)} Basic XP | "
+            f"{pct:.1f}% {bar(earned1_basic, BASIC_1X)}"
+        )
+    elif basic <= BASIC_4X + BASIC_2X:
+        console.print(
+            f"[dim]1x : Left: {BASIC_1X} Basic XP[/dim]"
+        )
+    else:
+        console.print(
+            f"[dim]1x : Earned: {int(earned1_basic)} XP ({int(earned1_basic)} Basic XP)[/dim]"
+        )
+
+    # ───────── 0.175x ─────────
+    if stage == "0.175x":
+        extra_basic = basic - BASIC_CAP
+        _, reduced_xp, _ = compute_xp(basic)
+        console.print(
+            f"0.175x : Earned: {int(reduced_xp)} XP (~{int(extra_basic)} Basic XP)"
+        )
+
+    console.print("\n[bold]Basic XP Progress[/bold]")
+    console.print(f"{basic:.0f}/{t1} ({(basic/t1)*100:.1f}%) {bar(basic, t1)}")
+    console.print("[bold]Mission XP Progress[/bold]")
     console.print(f"{m_cur}/{m_max} ({m_pct:.1f}%) {bar(m_cur, m_max)}")
 
-    console.print("\n[bold]Thresholds[/bold]")
-    console.print(f"4x end   : {rem4:>5} left ({p4:.1f}%)")
-    console.print(f"2x end   : {rem2:>5} left ({p2:.1f}%)")
-    console.print(f"OVERLOAD : {rem1:>5} left ({p1:.1f}%)")
-
-    console.print("\n[bold]Games[/bold]")
-    console.print(f"Played DM      : {dm_played:.1f}")
-    console.print(f"Played Comp    : {comp_played:.1f}")
-    console.print(f"To Overload DM : {dm_need:.1f}")
-    console.print(f"To Overload CP : {comp_need:.1f}")
-
-    console.print("\n[bold]Time[/bold]")
-    console.print(f"Spent (DM)  : {dm_played*DM_TIME:.0f} min")
-    console.print(f"Needed (DM) : {dm_need*DM_TIME:.0f} min")
+    console.print("\n[bold]Approximations[/bold]")
+    console.print(
+        f"DM   : {dm_played:.1f} ({dm_time_spent:.0f}m) played | {dm_need:.1f} ({dm_time_need:.0f}m) to play"
+    )
+    console.print(
+        f"Comp : {comp_played:.1f} ({comp_time_spent:.0f}m) played | {comp_need:.1f} ({comp_time_need:.0f}m) to play"
+    )
 
     console.print("\n[bold]Rank[/bold]")
     console.print(f"XP to next rank: {xp_to_rank}")
