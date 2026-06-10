@@ -222,8 +222,7 @@ def status():
     console.print("[bold]At XP Overload[/bold]")
     console.print(f"Medal: {future_medal} | Rank: {future_rank} | XP: {future_xp}")
 
-    console.print(f"\n[green]Current Stage:[/green] {stage}")
-
+    console.print(f"\n[bold green]Current Stage:[/bold green] {stage}")
     # ───────── 4x ─────────
     earned4_basic = min(basic, BASIC_4X)
     earned4_xp = earned4_basic * 4
@@ -233,8 +232,7 @@ def status():
         pct = (basic / BASIC_4X) * 100
         console.print(
             f"4x : Earned: {int(earned4_xp)} XP ({int(earned4_basic)} Basic XP) | "
-            f"Left: {int(left_xp)} XP ({int(left_basic)} Basic XP) | "
-            f"{pct:.1f}% {bar(earned4_basic, BASIC_4X)}"
+            f"Left: {int(left_xp)} XP ({int(left_basic)} Basic XP)"
         )
     else:
         console.print(
@@ -250,8 +248,7 @@ def status():
         pct = (earned2_basic / BASIC_2X) * 100
         console.print(
             f"2x : Earned: {int(earned2_xp)} XP ({int(earned2_basic)} Basic XP) | "
-            f"Left: {int(left_xp)} XP ({int(left_basic)} Basic XP) | "
-            f"{pct:.1f}% {bar(earned2_basic, BASIC_2X)}"
+            f"Left: {int(left_xp)} XP ({int(left_basic)} Basic XP)"
         )
     elif basic <= BASIC_4X:
         console.print(
@@ -269,8 +266,7 @@ def status():
         pct = (earned1_basic / BASIC_1X) * 100
         console.print(
             f"1x : Earned: {int(earned1_basic)} XP ({int(earned1_basic)} Basic XP) | "
-            f"Left: {int(left_basic)} Basic XP | "
-            f"{pct:.1f}% {bar(earned1_basic, BASIC_1X)}"
+            f"Left: {int(left_basic)} Basic XP"
         )
     elif basic <= BASIC_4X + BASIC_2X:
         console.print(
@@ -289,24 +285,117 @@ def status():
             f"0.175x : Earned: {int(reduced_xp)} XP (~{int(extra_basic)} Basic XP)"
         )
 
-    console.print("\n[bold]Basic XP Progress[/bold]")
-    console.print(f"{basic:.0f}/{t1} ({(basic/t1)*100:.1f}%) {bar(basic, t1)}")
-    console.print("[bold]Mission XP Progress[/bold]")
-    console.print(f"{m_cur}/{m_max} ({m_pct:.1f}%) {bar(m_cur, m_max)}")
-
-    console.print("\n[bold]Approximations[/bold]")
+    console.print("\n[bold]Progress[/bold]")
+    # basic progress within stage and total
+    stage_cap = {
+        "4x": BASIC_4X,
+        "2x": BASIC_2X,
+        "1x": BASIC_1X,
+        "0.175x": BASIC_CAP
+    }[stage]
+    if stage == "4x":
+        stage_cur = basic
+    elif stage == "2x":
+        stage_cur = basic - BASIC_4X
+    elif stage == "1x":
+        stage_cur = basic - BASIC_4X - BASIC_2X
+    else:
+        stage_cur = basic
     console.print(
-        f"DM   : {dm_played:.1f} ({dm_time_spent:.0f}m) played | {dm_need:.1f} ({dm_time_need:.0f}m) to play"
+        f"Stage XP   : {int(stage_cur)}/{int(stage_cap)} "
+        f"({(stage_cur/stage_cap)*100:.1f}%) {bar(stage_cur, stage_cap)}"
     )
     console.print(
-        f"Comp : {comp_played:.1f} ({comp_time_spent:.0f}m) played | {comp_need:.1f} ({comp_time_need:.0f}m) to play"
+        f"Total XP   : {basic:.0f}/{t1} ({(basic/t1)*100:.1f}%) {bar(basic, t1)}"
+    )
+    console.print(
+        f"Mission XP : {m_cur}/{m_max} ({m_pct:.1f}%) {bar(m_cur, m_max)}"
     )
 
-    console.print("\n[bold]Rank[/bold]")
-    console.print(f"XP to next rank: {xp_to_rank}")
+    console.print("\n[bold]Playtime Estimation[/bold]")
+    console.print(
+        f"DM   : Played: {dm_played:.1f} (~{dm_time_spent:.1f} min or ~{dm_time_spent/60:.1f} hr)  |  "
+        f"Left: {dm_need:.1f} (~{dm_time_need:.1f} min or ~{dm_time_need/60:.1f} hr)"
+    )
+    console.print(
+        f"Comp : Played: {comp_played:.1f} (~{comp_time_spent:.1f} min or ~{comp_time_spent/60:.1f} hr)  |  "
+        f"Left: {comp_need:.1f} (~{comp_time_need:.1f} min or ~{comp_time_need/60:.1f} hr)"
+    )
+
+    # ───────── TARGET: RANK-UP / WEEKLY DROP ─────────
+
+    # detect weekly drop
+    is_weekly = (row["rank"] == prev["rank"] and row["medal"] == prev["medal"])
+    console.print("\n[bold]To Weekly Drop[/bold]" if is_weekly else "\n[bold]To Rank-Up[/bold]")
+    xp_needed = XP_PER_RANK - row["xp"]
+
+    # simulate earning XP
+    sim_basic = basic
+    sim_xp = 0
+
+    while sim_xp < xp_needed:
+        gained, _, sim_stage = compute_xp(sim_basic + 1)
+        gained_prev, _, _ = compute_xp(sim_basic)
+        delta = gained - gained_prev
+        sim_xp += delta
+        sim_basic += 1
+
+    # mission impact
+    mission_left = max(0, m_max - m_cur)
+    # ───────── OUTPUT ─────────
+
+    basic_needed_no_mission = sim_basic - basic
+
+    # playtime (no mission)
+    dm_needed_nm = basic_needed_no_mission / DM_XP
+    comp_needed_nm = basic_needed_no_mission / COMP_XP
+    dm_time_nm = dm_needed_nm * DM_TIME
+    comp_time_nm = comp_needed_nm * COMP_TIME
+    console.print(
+        f"XP needed  : {xp_needed} XP (~{int(basic_needed_no_mission)} Basic XP)"
+    )
+    console.print(
+        f"Stage Flow : {stage} → {sim_stage}"
+    )
+
+    # ───────── WITH / WITHOUT MISSION ─────────
+    if mission_left > 0:
+        xp_after_mission = max(0, xp_needed - mission_left)
+        # simulate AGAIN but with mission reducing needed XP
+        sim_basic_m = basic
+        sim_xp_m = 0
+        while sim_xp_m < xp_after_mission:
+            gained, _, _ = compute_xp(sim_basic_m + 1)
+            gained_prev, _, _ = compute_xp(sim_basic_m)
+            sim_xp_m += (gained - gained_prev)
+            sim_basic_m += 1
+
+        basic_needed_with_mission = sim_basic_m - basic
+        # playtime (with mission)
+        dm_needed_m = basic_needed_with_mission / DM_XP
+        comp_needed_m = basic_needed_with_mission / COMP_XP
+        dm_time_m = dm_needed_m * DM_TIME
+        comp_time_m = comp_needed_m * COMP_TIME
+
+        console.print(
+            f"Left without mission : ~{int(basic_needed_no_mission)} Basic XP | "
+            f"DM {dm_needed_nm:.1f} (~{dm_time_nm:.0f} min or ~{dm_time_nm/60:.1f} hr)  |  "
+            f"Comp {comp_needed_nm:.1f} (~{comp_time_nm:.0f} min or ~{comp_time_nm/60:.1f} hr)"
+        )
+        console.print(
+            f"Left with mission    : ~{int(basic_needed_with_mission)} Basic XP | "
+            f"DM {dm_needed_m:.1f} (~{dm_time_m:.0f} min or ~{dm_time_m/60:.1f} hr)  |  "
+            f"Comp {comp_needed_m:.1f} (~{comp_time_m:.0f} min or ~{comp_time_m/60:.1f} hr)"
+        )
+    else:
+        console.print(
+            f"Left       : ~{int(basic_needed_no_mission)} Basic XP | "
+            f"DM {dm_needed_nm:.1f} (~{dm_time_nm:.0f} min or ~{dm_time_nm/60:.1f} hr)  |  "
+            f"Comp {comp_needed_nm:.1f} (~{comp_time_nm:.0f} min or ~{comp_time_nm/60:.1f} hr)"
+        )
 
 # ─────────────────────────────
-# UPDATE / DELETE / TABLE same style
+# UPDATE / DELETE / TABLE
 # ─────────────────────────────
 
 @app.command()
