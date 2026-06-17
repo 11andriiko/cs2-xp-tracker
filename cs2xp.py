@@ -1,4 +1,7 @@
 import json
+import sys
+
+IS_FROZEN = getattr(sys, 'frozen', False)
 import datetime
 from pathlib import Path
 from rich.table import Table
@@ -72,6 +75,7 @@ RESET_UTC_HOUR = 1        # weekly reset is Wednesday 01:00 UTC
 LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=3))  # GMT+3
 
 def week_now():
+    # Shift UTC back by RESET_UTC_HOUR so the reset maps to 'midnight' for date arithmetic
     shifted = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=RESET_UTC_HOUR)
     return max(1, (shifted.date() - FIRST_WED).days // 7 + 1)
 
@@ -85,6 +89,7 @@ def get_week_dates_iso(week):
 
 def time_left_in_week(week):
     _, end = get_week_dates(week)
+    # Reset fires on the Wednesday *after* end-date at RESET_UTC_HOUR UTC
     next_reset = datetime.datetime(end.year, end.month, end.day,
                                    tzinfo=datetime.timezone.utc) \
                  + datetime.timedelta(days=1, hours=RESET_UTC_HOUR)
@@ -434,8 +439,9 @@ def run_status(target_week=None):
 
     if mission_left > 0:
         basic_m, _ = simulate_basic_needed(max(0, xp_needed - mission_left))
-        console.print(f"  Left without mission : ~{int(basic_nm)} Basic XP | {playtime_line(basic_nm)}")
-        console.print(f"  Left with mission    : ~{int(basic_m)} Basic XP | {playtime_line(basic_m)}")
+        w_bx = max(len(str(int(basic_nm))), len(str(int(basic_m))))
+        console.print(f"  Left without mission : ~{int(basic_nm):{w_bx}} Basic XP | {playtime_line(basic_nm)}")
+        console.print(f"  Left with mission    : ~{int(basic_m):{w_bx}} Basic XP | {playtime_line(basic_m)}")
     else:
         console.print(f"  Left       : ~{int(basic_nm)} Basic XP | {playtime_line(basic_nm)}")
 
@@ -854,7 +860,10 @@ def parse_command(raw: str):
 
 def run_build():
     """Create a single-file .exe via PyInstaller, then clean up all build artefacts."""
-    import subprocess, sys, shutil, tempfile
+    if IS_FROZEN:
+        console.print("[yellow]Build is not available when running as a compiled .exe.[/yellow]")
+        return
+    import subprocess, shutil, tempfile
 
     script = Path(__file__).resolve()
     out_dir = script.parent
@@ -905,8 +914,9 @@ def run_build():
 # ═══════════════════════════════════════════
 
 def interactive():
+    build_line = "" if IS_FROZEN else "  [cyan]b[/cyan]       – build standalone .exe\n"
     console.print(Panel.fit(
-        "[bold cyan]🎯 CS2 XP Tracker[/bold cyan]\n\n"
+        "[bold cyan]CS2 XP Tracker[/bold cyan]\n\n"
         "Track your weekly XP progress in CS2.\n\n"
         "  [cyan]s[/cyan]       – status (current week)\n"
         "  [cyan]u[/cyan]       – update XP\n"
@@ -914,7 +924,7 @@ def interactive():
         "  [cyan]t -f[/cyan]    – table + projection\n"
         "  [cyan]t 1-10[/cyan]  – filter by week range\n"
         "  [cyan]d 3-7[/cyan]   – delete week range\n"
-        "  [cyan]b[/cyan]       – build standalone .exe\n"
+        + build_line +
         "  [cyan]h[/cyan]       – help\n"
         "  [cyan]e[/cyan]       – exit"
     ))
@@ -935,7 +945,11 @@ def interactive():
             elif cmd == "status": run_status(target_week=week)
             elif cmd == "update": run_update(mode=mode or "full")
             elif cmd == "delete": run_delete(week_range=week_range)
-            elif cmd == "build":  run_build()
+            elif cmd == "build":
+                if IS_FROZEN:
+                    console.print("[yellow]Build is not available when running as a compiled .exe.[/yellow]")
+                else:
+                    run_build()
             elif cmd == "table":
                 # Auto-detect mixed real/projected range
                 eff_mode = mode or "existing"
