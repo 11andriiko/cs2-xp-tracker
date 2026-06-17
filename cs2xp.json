@@ -168,15 +168,27 @@
     "date_end": "2026-06-09"
   },
   "23": {
-    "abs_xp": 607710,
+    "abs_xp": 609569,
     "rank": 5,
-    "xp": 2710,
+    "xp": 4569,
     "medal": 3,
-    "basic_xp": 4798,
-    "reduced_xp": 0,
+    "basic_xp": 8377,
+    "reduced_xp": 365,
     "mission_actual": 600,
     "mission_max": 600,
     "date_start": "2026-06-10",
     "date_end": "2026-06-16"
+  },
+  "24": {
+    "abs_xp": 610941,
+    "rank": 6,
+    "xp": 941,
+    "medal": 3,
+    "basic_xp": 343,
+    "reduced_xp": 0,
+    "mission_actual": 0,
+    "mission_max": 1050,
+    "date_start": "2026-06-17",
+    "date_end": "2026-06-23"
   }
 }

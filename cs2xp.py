@@ -68,8 +68,11 @@ def save(data):
 # TIME HELPERS
 # ═══════════════════════════════════════════
 
+RESET_UTC_HOUR = 1        # weekly reset is Wednesday 01:00 UTC
+LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=3))  # GMT+3
+
 def week_now():
-    shifted = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1)
+    shifted = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=RESET_UTC_HOUR)
     return max(1, (shifted.date() - FIRST_WED).days // 7 + 1)
 
 def get_week_dates(week):
@@ -82,10 +85,11 @@ def get_week_dates_iso(week):
 
 def time_left_in_week(week):
     _, end = get_week_dates(week)
-    end_dt = datetime.datetime(end.year, end.month, end.day, 23, 59, 59,
-                               tzinfo=datetime.timezone(datetime.timedelta(hours=1)))
-    now    = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=1)))
-    return max(datetime.timedelta(0), end_dt - now)
+    next_reset = datetime.datetime(end.year, end.month, end.day,
+                                   tzinfo=datetime.timezone.utc) \
+                 + datetime.timedelta(days=1, hours=RESET_UTC_HOUR)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return max(datetime.timedelta(0), next_reset - now)
 
 def fmt_timedelta(td):
     s = int(td.total_seconds())
@@ -382,9 +386,13 @@ def run_status(target_week=None):
             return games, mins, mins / 60
         return cell(played_basic), cell(need_basic)
 
-    dm_played_c,   dm_need_c   = playtime_row("DM",   basic, rem1)
-    comp_played_c, comp_need_c = playtime_row("Comp", basic, rem1)
-    all_cells = [dm_played_c, dm_need_c, comp_played_c, comp_need_c]
+    overloaded = (rem1 == 0)
+    over_basic = max(0, basic - t1) if overloaded else 0
+    right_basic = over_basic if overloaded else rem1
+
+    dm_played_c,   dm_right_c   = playtime_row("DM",   basic, right_basic)
+    comp_played_c, comp_right_c = playtime_row("Comp", basic, right_basic)
+    all_cells = [dm_played_c, dm_right_c, comp_played_c, comp_right_c]
 
     gs = [f"{c[0]:.1f}" for c in all_cells]
     ms = [f"{c[1]:.1f}" for c in all_cells]
@@ -394,9 +402,10 @@ def run_status(target_week=None):
     def pt(i):
         return f"{gs[i]:>{WG}} (~{ms[i]:>{WM}} min or ~{hs[i]:>{WH}} hr)"
 
+    right_label = "Over" if overloaded else "Left"
     console.print("\n[bold]Playtime Estimation[/bold]")
-    console.print(f"  DM   : Played: {pt(0)}  |  Left: {pt(1)}")
-    console.print(f"  Comp : Played: {pt(2)}  |  Left: {pt(3)}")
+    console.print(f"  DM   : Played: {pt(0)}  |  {right_label}: {pt(1)}")
+    console.print(f"  Comp : Played: {pt(2)}  |  {right_label}: {pt(3)}")
 
     # ── Rank-up / weekly drop ──
     is_weekly = (row["rank"] == prev["rank"] and row["medal"] == prev["medal"])
@@ -405,6 +414,7 @@ def run_status(target_week=None):
 
     def simulate_basic_needed(xp_target):
         sb, sx = basic, 0
+        _, _, s2 = compute_xp(sb)
         while sx < xp_target:
             g,  _, s2 = compute_xp(sb + 1)
             gp, _, _  = compute_xp(sb)
@@ -540,7 +550,7 @@ def run_update(mode="full"):
         data[next_w].update(next_fields)
     save(data)
     console.print(
-        f"[green]✓ Saved:[/green] Week: {w} | "
+        f"\n[green]✓ Saved:[/green] Week: {w} | "
         f"Medal: {new['medal']} | Rank: {new['rank']} | XP: {new['xp']} | Mission: {new['mission']}"
     )
 
