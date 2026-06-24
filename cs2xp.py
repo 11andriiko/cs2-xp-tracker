@@ -18,7 +18,7 @@ except ImportError:
     _PT_HISTORY = None
 
 console = Console()
-DATA_FILE = Path("cs2xp.json")
+DATA_FILE = Path("cs2xp_data.json")
 
 # ═══════════════════════════════════════════
 # CONSTANTS
@@ -548,7 +548,13 @@ def run_update(mode="full"):
         for k, v in new_fields.items():
             old_v = row.get(k)
             if v != old_v:
-                console.print(f"  {k}: [dim]{old_v}[/dim] → [green]{v}[/green]")
+                if isinstance(v, (int, float)) and isinstance(old_v, (int, float)):
+                    delta = v - old_v
+                    sign  = "+" if delta >= 0 else ""
+                    diff  = f" [yellow]({sign}{delta})[/yellow]"
+                else:
+                    diff = ""
+                console.print(f"  {k}: [dim]{old_v}[/dim] → [green]{v}[/green]{diff}")
 
     # ── Save ──
     data[str(w)].update(new_fields)
@@ -620,8 +626,16 @@ def run_delete(week_range=None):
 # TABLE
 # ═══════════════════════════════════════════
 
-def build_projection(data):
-    """Project weekly XP to year-end, assuming overload + full mission each week."""
+def build_projection(data, weekly_cap=None):
+    """Project weekly XP to year-end.
+
+    weekly_cap: if None, assumes overload (full basic XP cap) + full mission
+    each week, same as before. If given, it's an abs_xp amount earned each
+    week (mission XP included) — used to model a player who can't/won't grind
+    a full overload week. The full mission XP is still always credited first
+    (it's "free"), and whatever's left of the cap is converted into basic XP
+    via the normal XP curve (reverse_basic_from_total), capped at BASIC_CAP.
+    """
     if not data:
         return {}
     last_w   = max(int(k) for k in data)
@@ -629,26 +643,44 @@ def build_projection(data):
     proj     = {}
     cap_xp, _, _ = compute_xp(BASIC_CAP)
     for w in range(last_w + 1, last_week_of_year() + 1):
-        mm      = mission_max(w)
-        new_abs = prev_abs + cap_xp + mm
+        mm = mission_max(w)
+
+        if weekly_cap is None:
+            gained_total = cap_xp + mm
+            basic        = BASIC_CAP
+            reduced      = 0
+            mission_a    = mm
+        else:
+            gained_total = max(0, weekly_cap)
+            mission_a    = min(mm, gained_total)
+            remaining    = max(0, gained_total - mission_a)
+            # Convert remaining (post-mission) XP into basic XP via the curve,
+            # capping basic XP at BASIC_CAP (can't exceed normal weekly cap).
+            basic_uncapped = reverse_basic_from_total(remaining)
+            basic          = min(basic_uncapped, BASIC_CAP)
+            _, reduced, _  = compute_xp(basic)
+
+        new_abs = prev_abs + gained_total
         si, ei  = get_week_dates_iso(w)
         m, r, x = abs_to_mrx(new_abs)
         proj[str(w)] = {
             "abs_xp": new_abs, "medal": m, "rank": r, "xp": x,
-            "basic_xp": BASIC_CAP, "reduced_xp": 0,
-            "mission_actual": mm, "mission_max": mm,
+            "basic_xp": int(basic), "reduced_xp": int(reduced),
+            "mission_actual": mission_a, "mission_max": mm,
             "date_start": si, "date_end": ei,
         }
         prev_abs = new_abs
     return proj
 
-def run_table(mode="existing", week_range=None):
+def run_table(mode="existing", week_range=None, weekly_cap=None):
     """
     mode: "existing" | "projected" | "full" | "auto"
     When week_range spans both real and projected weeks, auto-prints both tables.
+    weekly_cap: optional abs_xp amount earned per week, used for projected weeks
+    (see build_projection). None = default overload assumption.
     """
     data = load()
-    proj = build_projection(data)
+    proj = build_projection(data, weekly_cap=weekly_cap)
 
     def filter_w(d):
         if week_range is None:
@@ -657,6 +689,11 @@ def run_table(mode="existing", week_range=None):
 
     real_rows = filter_w(data)
     proj_rows = filter_w(proj)
+
+    proj_title = (
+        "CS2 XP – Projected Data (overload each week)" if weekly_cap is None
+        else f"CS2 XP – Projected Data ({weekly_cap} abs XP/week)"
+    )
 
     # "auto" mode: if a range is given that covers both real and projected, show both
     if mode == "existing":
@@ -667,7 +704,7 @@ def run_table(mode="existing", week_range=None):
 
     elif mode == "projected":
         if proj_rows:
-            print_data_table(proj_rows, "CS2 XP – Projected Data (overload each week)")
+            print_data_table(proj_rows, proj_title)
         else:
             console.print("[dim]No projected data for those weeks.[/dim]")
 
@@ -677,7 +714,7 @@ def run_table(mode="existing", week_range=None):
         else:
             console.print("[dim]No recorded data for those weeks.[/dim]")
         if proj_rows:
-            print_data_table(proj_rows, "CS2 XP – Projected Data (overload each week)")
+            print_data_table(proj_rows, proj_title)
         else:
             console.print("[dim]No projected data for those weeks.[/dim]")
 
@@ -685,11 +722,11 @@ def run_table(mode="existing", week_range=None):
         # When a week range spans real + projected weeks: show both tables
         if real_rows and proj_rows:
             print_data_table(real_rows, "CS2 XP – Recorded Data")
-            print_data_table(proj_rows, "CS2 XP – Projected Data (overload each week)")
+            print_data_table(proj_rows, proj_title)
         elif real_rows:
             print_data_table(real_rows, "CS2 XP – Recorded Data")
         elif proj_rows:
-            print_data_table(proj_rows, "CS2 XP – Projected Data (overload each week)")
+            print_data_table(proj_rows, proj_title)
         else:
             console.print("[dim]No data for those weeks.[/dim]")
 
@@ -726,8 +763,14 @@ HELP_TEXT = f"""[bold cyan]CS2 XP Tracker — Help[/bold cyan]
       When range spans real + projected weeks, both tables are shown automatically.
       [cyan]-existing[/cyan] / [cyan]-e[/cyan]     Only recorded weeks (default).
       [cyan]-projected[/cyan] / [cyan]-p[/cyan]    Only projected weeks (overload each week to year-end).
+      [cyan]-projected N[/cyan] / [cyan]-p N[/cyan]  Same, but assumes only N abs XP earned each week
+                              instead of a full overload week. Useful if you can't/won't
+                              grind a full week and want to see the realistic medal pace.
+                              Mission XP is still credited first each week (it's free);
+                              N just caps the total (mission + basic) XP earned that week.
+                              If N omitted, falls back to the default overload assumption.
       [cyan]-full[/cyan] / [cyan]-f[/cyan]          Both recorded and projected.
-      Examples: [cyan]t[/cyan]  [cyan]t -f[/cyan]  [cyan]t 1-10[/cyan]  [cyan]t -p 3-8[/cyan]
+      Examples: [cyan]t[/cyan]  [cyan]t -f[/cyan]  [cyan]t 1-10[/cyan]  [cyan]t -p 3-8[/cyan]  [cyan]t -p 1000[/cyan]
 
   [cyan]build[/cyan] / [cyan]b[/cyan]
       Compile cs2xp.py into a standalone .exe using PyInstaller.
@@ -793,21 +836,22 @@ _DEFAULT_MODES = {
 }
 
 def parse_command(raw: str):
-    """Returns (cmd, mode, week, week_range, error) — all Nones on empty input."""
+    """Returns (cmd, mode, week, week_range, weekly_cap, error) — all Nones on empty input."""
     parts = raw.strip().lower().split()
     if not parts:
-        return None, None, None, None, None
+        return None, None, None, None, None, None
 
     verb = parts[0]
     cmd  = _VERBS.get(verb)
     if cmd is None:
-        return None, None, None, None, f"[red]Unknown command '{verb}'. Type 'help'.[/red]"
+        return None, None, None, None, None, f"[red]Unknown command '{verb}'. Type 'help'.[/red]"
 
     valid_flags = _CMD_MODES.get(cmd, {})
     args        = parts[1:]
     mode        = None
     week        = None
     week_range  = None
+    weekly_cap  = None
     i           = 0
 
     while i < len(args):
@@ -819,14 +863,22 @@ def parse_command(raw: str):
             if mapped == "_week":
                 # Consume next token as week number
                 if i + 1 >= len(args):
-                    return None, None, None, None, f"[red]{a} requires a week number.[/red]"
+                    return None, None, None, None, None, f"[red]{a} requires a week number.[/red]"
                 try:
                     week = int(args[i + 1])
                 except ValueError:
-                    return None, None, None, None, f"[red]{a} requires an integer.[/red]"
+                    return None, None, None, None, None, f"[red]{a} requires an integer.[/red]"
                 i += 2; continue
             elif mapped is not None:
                 mode = mapped
+                # -projected / -p may optionally be followed by an integer:
+                # the abs_xp amount earned per week, to use instead of the
+                # default overload assumption when building the projection.
+                if mapped == "projected" and i + 1 < len(args):
+                    nxt = args[i + 1]
+                    if nxt.lstrip("-").isdigit():
+                        weekly_cap = int(nxt)
+                        i += 2; continue
             i += 1; continue
 
         # Universal -full / -f on any command (no-op if not in valid_flags already)
@@ -838,7 +890,7 @@ def parse_command(raw: str):
         # Unknown flag
         if a.startswith("-"):
             valids = "  ".join(valid_flags) if valid_flags else "(none)"
-            return None, None, None, None, (
+            return None, None, None, None, None, (
                 f"[red]Unknown argument '{a}' for '{verb}'.[/red]\n"
                 f"[dim]Valid: {valids}[/dim]"
             )
@@ -849,10 +901,10 @@ def parse_command(raw: str):
             if wr is not None:
                 week_range = wr; i += 1; continue
 
-        return None, None, None, None, f"[red]Unexpected token '{a}' for '{verb}'. Type 'help'.[/red]"
+        return None, None, None, None, None, f"[red]Unexpected token '{a}' for '{verb}'. Type 'help'.[/red]"
 
     mode = mode or _DEFAULT_MODES.get(cmd)
-    return cmd, mode, week, week_range, None
+    return cmd, mode, week, week_range, weekly_cap, None
 
 # ═══════════════════════════════════════════
 # BUILD EXE
@@ -935,7 +987,7 @@ def interactive():
             if not raw:
                 continue
 
-            cmd, mode, week, week_range, err = parse_command(raw)
+            cmd, mode, week, week_range, weekly_cap, err = parse_command(raw)
             if err:
                 console.print(err); continue
             if cmd is None:
@@ -955,7 +1007,7 @@ def interactive():
                 eff_mode = mode or "existing"
                 if week_range and eff_mode == "existing":
                     eff_mode = "auto"
-                run_table(mode=eff_mode, week_range=week_range)
+                run_table(mode=eff_mode, week_range=week_range, weekly_cap=weekly_cap)
             elif cmd == "help":   run_help()
 
         except (KeyboardInterrupt, EOFError):

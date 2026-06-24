@@ -1,0 +1,12 @@
+# Runtime dependencies (required to run cs2xp.py with python)
+rich>=13.0.0
+
+# Optional: enables arrow-key history / better line editing in the interactive
+# prompt. The script auto-detects this and falls back to plain input() if
+# it's missing, so it is NOT required.
+prompt_toolkit>=3.0.0
+
+# Build-time only: needed if you run the in-app "build" / "b" command to
+# compile cs2xp.py into cs2xp.exe. Not required just to run the script.
+# Installed automatically by the script itself if missing.
+pyinstaller>=6.0.0

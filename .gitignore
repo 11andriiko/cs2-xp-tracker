@@ -1,28 +1,42 @@
-# Python
-**pycache**/
+# ── Python ──
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
+.Python
+*.egg-info/
+.eggs/
 
-# Virtual env
+# ── Virtual environments ──
+.venv/
 venv/
-.env/
+env/
 
-# PyInstaller
+# ── PyInstaller build artifacts ──
+# cs2xp.py's own "build" command already cleans these up automatically,
+# but ignore them anyway in case a manual PyInstaller run is used instead.
 build/
 dist/
 *.spec
 
-# Executables
+# ── Compiled output ──
+# Don't commit the compiled .exe to the repo itself — it should be attached
+# to GitHub Releases instead (see README "Releases" section). Remove the
+# line below if you specifically want to track the .exe in git.
 *.exe
 
-# # Data files (optional — keep if you want persistence tracked)
-# cs2xp.json
+# ── Inno Setup build output ──
+Output/
+*.iss.bak
 
-# OS junk
-.DS_Store
-Thumbs.db
+# ── User data ──
+# This is the personal save file the script creates next to itself.
+# Never commit a real one — it contains a specific person's XP progress.
+cs2xp.json
 
-# IDE
+# ── Editor / OS ──
 .vscode/
 .idea/
+*.swp
+.DS_Store
+Thumbs.db
