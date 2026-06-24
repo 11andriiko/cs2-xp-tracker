@@ -58,7 +58,7 @@ you're on 3.10 see [Troubleshooting](#troubleshooting)).
 
 ```powershell
 # 1. Clone the repository
-git clone https://github.com/<your-username>/<your-repo>.git
+git clone https://github.com/11andriiko/cs2-xp-tracker.git
 cd <your-repo>
 
 # 2. (Recommended) create a virtual environment
@@ -197,7 +197,7 @@ through the GitHub UI (e.g. for a pinned release URL), PowerShell's
 
 ```powershell
 Invoke-WebRequest `
-  -Uri "https://github.com/<your-username>/<your-repo>/releases/latest/download/CS2XPTracker-Setup.exe" `
+  -Uri "https://github.com/11andriiko/cs2-xp-tracker/releases/latest/download/CS2XPTracker-Setup.exe" `
   -OutFile "$env:USERPROFILE\Downloads\CS2XPTracker-Setup.exe"
 
 # then run it:
@@ -216,7 +216,7 @@ same way:
 
 ```powershell
 Invoke-WebRequest `
-  -Uri "https://github.com/<your-username>/<your-repo>/archive/refs/heads/main.zip" `
+  -Uri "https://github.com/11andriiko/cs2-xp-tracker/archive/refs/heads/main.zip" `
   -OutFile "$env:USERPROFILE\Downloads\cs2xp-source.zip"
 
 Expand-Archive "$env:USERPROFILE\Downloads\cs2xp-source.zip" -DestinationPath "$env:USERPROFILE\Downloads\cs2xp-source"
