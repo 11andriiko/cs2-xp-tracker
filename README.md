@@ -13,18 +13,19 @@ account, no internet connection, and no external service involved.
 
 ## Table of contents
 
-- [Features](#features)
-- [Quick start (running from source)](#quick-start-running-from-source)
-- [Command reference](#command-reference)
-- [Building a standalone .exe](#building-a-standalone-exe)
-- [Building a real Windows installer](#building-a-real-windows-installer)
-- [Installing for end users (no Python required)](#installing-for-end-users-no-python-required)
-- [Downloading via PowerShell](#downloading-via-powershell)
-- [Moving this repo to a different GitHub account](#moving-this-repo-to-a-different-github-account)
-- [Project structure](#project-structure)
-- [Data file format](#data-file-format)
-- [Troubleshooting](#troubleshooting)
-- [License](#license)
+- [CS2 XP Tracker](#cs2-xp-tracker)
+  - [Table of contents](#table-of-contents)
+  - [Features](#features)
+  - [Quick start (running from source)](#quick-start-running-from-source)
+  - [Command reference](#command-reference)
+  - [Building a standalone .exe](#building-a-standalone-exe)
+  - [Building a real Windows installer](#building-a-real-windows-installer)
+  - [Installing for end users (no Python required)](#installing-for-end-users-no-python-required)
+  - [Downloading via PowerShell](#downloading-via-powershell)
+  - [Project structure](#project-structure)
+  - [Data file format](#data-file-format)
+  - [Troubleshooting](#troubleshooting)
+  - [License](#license)
 
 ---
 
@@ -220,41 +221,6 @@ Invoke-WebRequest `
 
 Expand-Archive "$env:USERPROFILE\Downloads\cs2xp-source.zip" -DestinationPath "$env:USERPROFILE\Downloads\cs2xp-source"
 ```
-
----
-
-## Moving this repo to a different GitHub account
-
-To push this project to a **different** GitHub account than the one it's
-currently connected to in VS Code:
-
-1. **Create a new empty repository** on the target GitHub account (via
-   the GitHub website — don't initialize it with a README, so it stays
-   empty and avoids merge conflicts on first push).
-2. In your VS Code terminal, check what remote you currently have:
-   ```powershell
-   git remote -v
-   ```
-3. Point `origin` at the new repo instead of removing/re-adding it:
-   ```powershell
-   git remote set-url origin https://github.com/<new-account>/<new-repo>.git
-   ```
-4. Push everything:
-   ```powershell
-   git push -u origin main
-   ```
-   (use `master` instead of `main` if that's your default branch name —
-   check with `git branch`)
-5. If VS Code prompts for GitHub sign-in and it's currently authenticated
-   as your *old* account, sign out via the Accounts icon in the bottom-left
-   of VS Code, then sign in as the new account when prompted, or use a
-   [Personal Access Token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
-   for that specific account if you need both accounts usable
-   side-by-side.
-
-From that point on, `git push` from VS Code goes to the new account's repo,
-and the PowerShell download commands above will work once you substitute
-in `<new-account>/<new-repo>`.
 
 ---
 
