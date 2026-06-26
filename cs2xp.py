@@ -18,7 +18,25 @@ except ImportError:
     _PT_HISTORY = None
 
 console = Console()
-DATA_FILE = Path("cs2xp_data.json")
+
+# ═══════════════════════════════════════════
+# APP / VERSION / PATHS
+# ═══════════════════════════════════════════
+
+APP_NAME    = "CS2 XP Tracker"
+__version__ = "1.0.0"
+
+GITHUB_OWNER = "11andriiko"
+GITHUB_REPO  = "cs2-xp-tracker"
+GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+
+def app_dir() -> Path:
+    """Folder the running program lives in (.exe folder when frozen, script folder otherwise)."""
+    if IS_FROZEN:
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+DATA_FILE = app_dir() / "cs2xp_data.json"
 
 # ═══════════════════════════════════════════
 # CONSTANTS
@@ -28,20 +46,29 @@ XP_PER_RANK  = 5000
 RANKS_MEDAL  = 39
 XP_PER_MEDAL = XP_PER_RANK * RANKS_MEDAL
 
-# Each entry: (basic_xp_cap_for_stage | None, multiplier, label)
-# Last stage has no cap — continues indefinitely.
+# Each entry: (basic_xp_cap_for_stage | None, multiplier, xp_limit_for_stage | None, label)
+#
+# xp_limit is the maximum bonus-inclusive XP this stage can ever output. It is
+# normally basic_xp_cap * multiplier, but at the 4x stage it is NOT exactly
+# that: the stage has a fixed bonus-XP pool, and the last basic-XP point
+# earned in the stage only gets whatever's left in that pool rather than a
+# full extra (multiplier-1) share. Concretely, stage 4x has a basic cap of
+# 1167 but a hard xp_limit of 4667 (not 1167*4=4668) — the 1167th basic XP
+# only contributes the 2 leftover bonus XP instead of a full 3, and the 1
+# remaining bonus XP that the pool can't cover is simply never awarded.
+# Last stage has no cap/limit — continues indefinitely.
 XP_STAGES = [
-    (1125, 4,     "4x"),
-    (1500, 2,     "2x"),
-    (3667, 1,     "1x"),
-    (None, 0.175, "0.175x"),
+    (1167, 4,     4667, "4x"),
+    (1500, 2,     3000, "2x"),
+    (3500, 1,     3500, "1x"),
+    (None, 0.175, None, "0.175x"),
 ]
 
 # Derived cumulative thresholds
-BASIC_4X     = XP_STAGES[0][0]                     # 1125
+BASIC_4X     = XP_STAGES[0][0]                     # 1167
 BASIC_2X     = XP_STAGES[1][0]                     # 1500
-BASIC_1X     = XP_STAGES[2][0]                     # 3667
-BASIC_CAP    = BASIC_4X + BASIC_2X + BASIC_1X      # 6292
+BASIC_1X     = XP_STAGES[2][0]                     # 3500
+BASIC_CAP    = BASIC_4X + BASIC_2X + BASIC_1X      # 6167
 REDUCED_MULT = XP_STAGES[3][1]                     # 0.175
 
 REDUCED_XP_WARN = 1000
@@ -149,47 +176,67 @@ def abs_to_mrx(abs_xp):
     return m, rem // XP_PER_RANK + 1, rem % XP_PER_RANK
 
 def compute_xp(basic):
-    """Returns (total_xp_gained, reduced_xp, stage_label)."""
-    cum, total = 0, 0
-    for cap, mult, label in XP_STAGES:
+    """Returns (total_xp_gained, reduced_xp, stage_label).
+
+    Each capped stage has both a basic_xp cap and a hard xp_limit on the
+    bonus-inclusive total it can output. Normally xp_limit == cap * mult,
+    but the 4x stage's xp_limit is slightly below that (its bonus pool runs
+    out one basic-XP-unit early), so the last basic XP point of that stage
+    only yields whatever's left of the pool instead of a full extra share.
+    """
+    cum_basic, total = 0, 0
+    for cap, mult, limit, label in XP_STAGES:
         if cap is None:
-            extra = basic - cum
+            extra = basic - cum_basic
             red   = extra * mult
             return total + red, red, label
-        into = min(basic - cum, cap)
+        into = basic - cum_basic
         if into <= 0:
             return total, 0, label
-        total += into * mult
-        cum   += cap
-        if basic <= cum:
-            return total, 0, label
-    return total, 0, XP_STAGES[-1][2]
+        if into >= cap:
+            # Whole stage consumed — output is the stage's fixed xp_limit
+            # (this is what absorbs the 4x-stage rounding clip).
+            total    += limit
+            cum_basic += cap
+            continue
+        # Partial stage: standard multiply, clipped to the stage's pool
+        # (clip only ever bites on the very last basic-XP unit of a stage).
+        total += min(into * mult, limit)
+        return total, 0, label
+    return total, 0, XP_STAGES[-1][3]
 
 def reverse_basic_from_total(total_xp):
-    cum, rem = 0, total_xp
-    for cap, mult, _ in XP_STAGES:
+    """Inverse of compute_xp. Assumes integer-ish basic XP inputs in practice
+    (the app always works with integer basic XP), so the rare fractional
+    ambiguity inside a stage's clipped final unit is a non-issue here."""
+    cum_basic, rem = 0, total_xp
+    for cap, mult, limit, label in XP_STAGES:
         if cap is None:
-            return cum + rem / mult
-        stage_total = cap * mult
-        if rem <= stage_total:
-            return cum + rem / mult
-        rem -= stage_total
-        cum += cap
-    return cum
+            return cum_basic + rem / mult
+        if rem <= limit:
+            lower_total = (cap - 1) * mult
+            if rem <= lower_total:
+                return cum_basic + rem / mult
+            # Inside the clipped final basic-XP unit of this stage.
+            frac = (rem - lower_total) / (limit - lower_total) if limit > lower_total else 1.0
+            return cum_basic + (cap - 1) + frac
+        rem -= limit
+        cum_basic += cap
+    return cum_basic
 
 def stage_at_basic(basic):
     """Returns (label, basic_into_stage, stage_cap_or_None)."""
     cum = 0
-    for cap, mult, label in XP_STAGES:
+    for cap, mult, limit, label in XP_STAGES:
         if cap is None or basic <= cum + cap:
             return label, basic - cum, cap
         cum += cap
-    return XP_STAGES[-1][2], basic - BASIC_CAP, None
+    return XP_STAGES[-1][3], basic - BASIC_CAP, None
 
 def stage_boundary_basic(basic):
     """Cumulative basic XP at end of current stage, or None if in final stage."""
     cum = 0
-    for cap, mult, label in XP_STAGES:
+    for cap, mult, limit, label in XP_STAGES:
         boundary = cum + (cap or 0)
         if cap is None or basic <= boundary:
             return boundary if cap is not None else None
@@ -197,9 +244,9 @@ def stage_boundary_basic(basic):
     return None
 
 def next_stage_label(current_label):
-    for i, (_, _, lbl) in enumerate(XP_STAGES):
+    for i, (_, _, _, lbl) in enumerate(XP_STAGES):
         if lbl == current_label and i + 1 < len(XP_STAGES):
-            return XP_STAGES[i + 1][2]
+            return XP_STAGES[i + 1][3]
     return None
 
 def bar(cur, maxv, length=20):
@@ -346,10 +393,13 @@ def run_status(target_week=None):
 
     # ── Progress bars ──
     lbl, into, scap = stage_at_basic(basic)
-    nums = [f"{int(into)}/{scap or '∞'}", f"{int(basic)}/{t1}", f"{m_cur}/{m_max}"]
+    total_now, _, _ = compute_xp(basic)
+    total_cap, _, _ = compute_xp(BASIC_CAP)
+    nums = [f"{int(into)}/{scap or '∞'}", f"{int(basic)}/{t1}", f"{int(total_now)}/{int(total_cap)}", f"{m_cur}/{m_max}"]
     pcts = [
         f"({into/scap*100:.1f}%)" if scap else "(overload)",
         f"({basic/t1*100:.1f}%)",
+        f"({total_now/total_cap*100:.1f}%)" if total_cap else "(0.0%)",
         f"({m_cur/m_max*100:.1f}%)" if m_max else "(0.0%)",
     ]
     WN = max(len(s) for s in nums)
@@ -357,13 +407,14 @@ def run_status(target_week=None):
 
     console.print("\n[bold]XP Progress[/bold]")
     console.print(f"  Stage XP   : {nums[0]:<{WN}} {pcts[0]:<{WP}} {bar(into, scap or basic)}")
-    console.print(f"  Total XP   : {nums[1]:<{WN}} {pcts[1]:<{WP}} {bar(basic, t1)}")
-    console.print(f"  Mission XP : {nums[2]:<{WN}} {pcts[2]:<{WP}} {bar(m_cur, m_max)}")
+    console.print(f"  Basic XP   : {nums[1]:<{WN}} {pcts[1]:<{WP}} {bar(basic, t1)}")
+    console.print(f"  Total XP   : {nums[2]:<{WN}} {pcts[2]:<{WP}} {bar(total_now, total_cap)}")
+    console.print(f"  Mission XP : {nums[3]:<{WN}} {pcts[3]:<{WP}} {bar(m_cur, m_max)}")
 
     # ── Per-stage breakdown ──
     console.print(f"\n[bold green]Current Stage:[/bold green] {stage}")
     cum = 0
-    for cap, mult, label in XP_STAGES:
+    for cap, mult, limit, label in XP_STAGES:
         if cap is None:
             if stage == label:
                 extra = basic - BASIC_CAP
@@ -371,14 +422,14 @@ def run_status(target_week=None):
                 console.print(f"  {label}: Earned: {int(red)} XP (~{int(extra)} Basic XP)")
             break
         earned_b = max(0, min(basic - cum, cap))
-        earned_x = int(earned_b * mult)
+        earned_x = int(limit) if earned_b >= cap else int(min(earned_b * mult, limit))
         is_cur   = (stage == label)
         not_yet  = (basic <= cum)
         if is_cur:
-            left_b, left_x = int(cap - earned_b), int((cap - earned_b) * mult)
+            left_b, left_x = int(cap - earned_b), int(limit - earned_x)
             console.print(f"  {label}: Earned: {earned_x} XP ({int(earned_b)} Basic XP) | Left: {left_x} XP ({left_b} Basic XP)")
         elif not_yet:
-            console.print(f"  [dim]{label}: Left: {int(cap*mult)} XP ({cap} Basic XP)[/dim]")
+            console.print(f"  [dim]{label}: Left: {int(limit)} XP ({cap} Basic XP)[/dim]")
         else:
             console.print(f"  [dim]{label}: Earned: {earned_x} XP ({int(earned_b)} Basic XP)[/dim]")
         cum += cap
@@ -734,7 +785,7 @@ def run_table(mode="existing", week_range=None, weekly_cap=None):
 # HELP
 # ═══════════════════════════════════════════
 
-HELP_TEXT = f"""[bold cyan]CS2 XP Tracker — Help[/bold cyan]
+HELP_TEXT = f"""[bold cyan]{APP_NAME}[/bold cyan] [dim]v{__version__}[/dim] — Help
 
 [bold]Commands[/bold]
 
@@ -778,6 +829,14 @@ HELP_TEXT = f"""[bold cyan]CS2 XP Tracker — Help[/bold cyan]
       All temporary build files are automatically deleted afterwards.
       PyInstaller is installed automatically if not already present.
 
+  [cyan]upgrade[/cyan] / [cyan]upg[/cyan]
+      Check GitHub for a newer release and install it in place.
+      Downloads the matching asset (.exe when running compiled, .py otherwise),
+      swaps it in, and restarts. Shows release notes before asking to confirm.
+
+  [cyan]locate[/cyan] / [cyan]loc[/cyan]
+      Show where the program is running from and where its data file is stored.
+
   [cyan]help[/cyan] / [cyan]h[/cyan]
       Show this help message.
       [cyan]-full[/cyan] / [cyan]-f[/cyan]         Alias (same as no argument).
@@ -805,6 +864,8 @@ _VERBS = {
     "table":  "table",  "t":    "table",
     "help":   "help",   "h":    "help",
     "build":  "build",  "b":    "build",
+    "upgrade": "upgrade", "upg": "upgrade",
+    "locate":  "locate",  "loc": "locate",
     "exit":   "exit",   "quit": "exit",   "stop": "exit",
     "e":      "exit",   "q":    "exit",
 }
@@ -828,6 +889,8 @@ _CMD_MODES = {
     "delete": {"-full": None, "-f": None},
     "help":   {"-full": None, "-f": None},
     "build":  {},
+    "upgrade": {},
+    "locate":  {},
 }
 
 _DEFAULT_MODES = {
@@ -962,23 +1025,145 @@ def run_build():
         console.print(f"[yellow]Build finished but {exe_path} not found — check output above.[/yellow]")
 
 # ═══════════════════════════════════════════
+# UPGRADE APP (self-update)
+# ═══════════════════════════════════════════
+
+def _parse_version(v):
+    """'v1.2.3' / '1.2.3' -> (1, 2, 3) for comparison. Non-numeric parts become 0."""
+    v = v.strip().lstrip("vV")
+    parts = []
+    for p in v.split("."):
+        digits = "".join(ch for ch in p if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts) or (0,)
+
+def _fetch_latest_release():
+    """Returns the parsed JSON of the latest GitHub release, or None on failure."""
+    import urllib.request, urllib.error
+
+    req = urllib.request.Request(
+        GITHUB_API_LATEST,
+        headers={"Accept": "application/vnd.github+json", "User-Agent": APP_NAME},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        console.print(f"[red]GitHub API error: {e.code} {e.reason}[/red]")
+    except urllib.error.URLError as e:
+        console.print(f"[red]Network error reaching GitHub: {e.reason}[/red]")
+    except Exception as e:
+        console.print(f"[red]Could not check for updates: {e}[/red]")
+    return None
+
+def _pick_asset(release):
+    """Pick the right release asset for this platform: .exe on Windows when frozen,
+    otherwise fall back to a .py asset (or the source .zip GitHub always provides)."""
+    assets = release.get("assets", [])
+    if IS_FROZEN and sys.platform == "win32":
+        for a in assets:
+            if a["name"].lower().endswith(".exe"):
+                return a
+    for a in assets:
+        if a["name"].lower().endswith(".py"):
+            return a
+    return None
+
+def run_upgrade():
+    """Check GitHub Releases for a newer version and, if found, download and
+    install it in place — replacing the running .exe (via a swap-on-restart
+    helper script) or the running .py file directly."""
+    console.print(f"[cyan]Current version:[/cyan] {__version__}")
+    console.print("[dim]Checking GitHub for the latest release…[/dim]")
+
+    release = _fetch_latest_release()
+    if release is None:
+        return
+
+    latest_tag = release.get("tag_name", "")
+    latest_ver = _parse_version(latest_tag)
+    cur_ver    = _parse_version(__version__)
+
+    if latest_ver <= cur_ver:
+        console.print(f"[green]✓ You're up to date.[/green] (latest: {latest_tag or __version__})")
+        return
+
+    console.print(f"[yellow]New version available:[/yellow] {latest_tag}  (you have {__version__})")
+    notes = (release.get("body") or "").strip()
+    if notes:
+        console.print(Panel(notes[:1500], title="Release notes", expand=False))
+
+    asset = _pick_asset(release)
+    if asset is None:
+        console.print(
+            "[yellow]No matching downloadable asset found in the release.[/yellow]\n"
+            f"[dim]You can grab it manually: {release.get('html_url', GITHUB_API_LATEST)}[/dim]"
+        )
+        return
+
+    if not _confirm(f"Download and install {asset['name']}? (yes/no)"):
+        console.print("[dim]Upgrade cancelled.[/dim]"); return
+
+    import urllib.request, tempfile, shutil
+
+    dest_dir = app_dir()
+    tmp_path = Path(tempfile.gettempdir()) / asset["name"]
+
+    console.print(f"[cyan]Downloading {asset['name']}…[/cyan]")
+    try:
+        urllib.request.urlretrieve(asset["browser_download_url"], tmp_path)
+    except Exception as e:
+        console.print(f"[red]Download failed: {e}[/red]")
+        return
+
+    if IS_FROZEN and sys.platform == "win32" and tmp_path.suffix.lower() == ".exe":
+        # Windows won't let a running .exe overwrite itself. Spin up a small
+        # batch helper that waits for this process to exit, swaps the file
+        # in, then relaunches it.
+        current_exe = Path(sys.executable).resolve()
+        bat_path    = Path(tempfile.gettempdir()) / "cs2xp_upgrade.bat"
+        bat_path.write_text(
+            "@echo off\r\n"
+            "timeout /t 2 /nobreak >nul\r\n"
+            f'move /y "{tmp_path}" "{current_exe}"\r\n'
+            f'start "" "{current_exe}"\r\n'
+            "del \"%~f0\"\r\n"
+        )
+        console.print("[green]✓ Update downloaded.[/green] Restarting to finish installing…")
+        import subprocess
+        subprocess.Popen(["cmd", "/c", str(bat_path)],
+                          creationflags=subprocess.CREATE_NEW_CONSOLE)
+        sys.exit(0)
+    else:
+        # Running as a plain .py script — overwrite it directly, safe to do
+        # while running on POSIX, and the only sane option cross-platform too.
+        target = Path(__file__).resolve()
+        shutil.move(str(tmp_path), str(target))
+        console.print(f"[green]✓ Updated {target.name} to {latest_tag}.[/green] Restart the app to use the new version.")
+
+# ═══════════════════════════════════════════
+# LOCATE
+# ═══════════════════════════════════════════
+
+def run_locate():
+    """Show where the program is running from and where its data file lives."""
+    prog_path = Path(sys.executable).resolve() if IS_FROZEN else Path(__file__).resolve()
+    kind      = "compiled .exe" if IS_FROZEN else "Python script"
+
+    console.print("[bold]Locations[/bold]")
+    console.print(f"  Program   : {prog_path}  [dim]({kind})[/dim]")
+    console.print(f"  App folder: {app_dir()}")
+    console.print(f"  Data file : {DATA_FILE}  [dim]({'exists' if DATA_FILE.exists() else 'not created yet'})[/dim]")
+
+# ═══════════════════════════════════════════
 # INTERACTIVE LOOP
 # ═══════════════════════════════════════════
 
 def interactive():
-    build_line = "" if IS_FROZEN else "  [cyan]b[/cyan]       – build standalone .exe\n"
     console.print(Panel.fit(
-        "[bold cyan]CS2 XP Tracker[/bold cyan]\n\n"
-        "Track your weekly XP progress in CS2.\n\n"
-        "  [cyan]s[/cyan]       – status (current week)\n"
-        "  [cyan]u[/cyan]       – update XP\n"
-        "  [cyan]t[/cyan]       – table of all weeks\n"
-        "  [cyan]t -f[/cyan]    – table + projection\n"
-        "  [cyan]t 1-10[/cyan]  – filter by week range\n"
-        "  [cyan]d 3-7[/cyan]   – delete week range\n"
-        + build_line +
-        "  [cyan]h[/cyan]       – help\n"
-        "  [cyan]e[/cyan]       – exit"
+        f"[bold cyan]{APP_NAME}[/bold cyan] [dim]v{__version__}[/dim]\n"
+        "Tracks your weekly CS2 XP progress.\n\n"
+        "Start with: [cyan]status[/cyan]  [cyan]update[/cyan]  [cyan]help[/cyan]"
     ))
 
     while True:
@@ -1002,6 +1187,8 @@ def interactive():
                     console.print("[yellow]Build is not available when running as a compiled .exe.[/yellow]")
                 else:
                     run_build()
+            elif cmd == "upgrade": run_upgrade()
+            elif cmd == "locate":  run_locate()
             elif cmd == "table":
                 # Auto-detect mixed real/projected range
                 eff_mode = mode or "existing"
