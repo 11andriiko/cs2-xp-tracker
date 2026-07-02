@@ -280,12 +280,30 @@ def ensure_week_exists(data, week):
     save(data)
     return data
 
+def total_to_basic_and_reduced(gained_total):
+    """Split a week's total gained XP into (basic_xp, reduced_xp).
+
+    reduced_xp is exact: it's only ever nonzero once gained_total exceeds the
+    xp total at BASIC_CAP, and in that case it equals gained_total minus that
+    boundary exactly (both are integers) — no lossy round-trip through a
+    fractional basic-XP estimate. basic_xp is still derived via the normal
+    curve, but it's just a display estimate once in overload (the game
+    doesn't track "basic XP" there), so any rounding on it is harmless.
+    """
+    cap_total, _, _ = compute_xp(BASIC_CAP)
+    cap_total = int(cap_total)
+    if gained_total <= cap_total:
+        basic = reverse_basic_from_total(gained_total)
+        return basic, 0
+    reduced = gained_total - cap_total          # exact — no rounding
+    basic   = BASIC_CAP + reduced / REDUCED_MULT  # display estimate only
+    return basic, reduced
+
 def compute_row_fields(medal, rank, xp, mission, prev_abs):
     """Return dict of computed fields for a week given raw inputs."""
-    abs_xp        = to_abs(medal, rank, xp)
-    gained        = max(0, abs_xp - prev_abs - mission)
-    basic         = reverse_basic_from_total(gained)
-    _, reduced, _ = compute_xp(basic)
+    abs_xp          = to_abs(medal, rank, xp)
+    gained          = max(0, abs_xp - prev_abs - mission)
+    basic, reduced  = total_to_basic_and_reduced(gained)
     return {
         "abs_xp":         abs_xp,
         "medal":          medal,
@@ -677,41 +695,120 @@ def run_delete(week_range=None):
 # TABLE
 # ═══════════════════════════════════════════
 
-def build_projection(data, weekly_cap=None):
-    """Project weekly XP to year-end.
+def run_table():
+    """Display all recorded (real) weekly data. No filtering, no projection —
+    use 'projection' for forward-looking what-if data."""
+    data = load()
+    if data:
+        print_data_table(data, "CS2 XP – Recorded Data")
+    else:
+        console.print("[dim]No recorded data yet.[/dim]")
 
-    weekly_cap: if None, assumes overload (full basic XP cap) + full mission
-    each week, same as before. If given, it's an abs_xp amount earned each
-    week (mission XP included) — used to model a player who can't/won't grind
-    a full overload week. The full mission XP is still always credited first
-    (it's "free"), and whatever's left of the cap is converted into basic XP
-    via the normal XP curve (reverse_basic_from_total), capped at BASIC_CAP.
+# ═══════════════════════════════════════════
+# PROJECTION
+# ═══════════════════════════════════════════
+#
+# Lets the user model the rest of the year week-by-week under a chosen
+# weekly effort level, made of two independent choices:
+#
+#   mission multiplier  [0, 1, 2, 3] -> mission_earned = mult * mission_max / 3
+#       0 = skip missions entirely, 3 = always complete the full weekly cycle.
+#
+#   xp target  -> how much TOTAL (basic + bonus) xp is earned that week:
+#       <number>   exact total xp for the week, mission xp included in it
+#       "bonus"    earn through 4x + 2x stages fully  -> 7667 total xp (2667 basic xp)
+#       "overload" earn all the way to overload        -> 11167 total xp (6167 basic xp)
+#       "rank"     earn exactly 5000 total xp (one rank's worth), mission xp included
+#
+# For every option, mission xp is credited first (it's "free"), and the
+# *target itself already includes mission xp* — so mission xp earned is
+# subtracted from the target before converting the remainder into basic xp.
+# To keep that subtraction sane, the target must be at least 2x the mission
+# xp earned (so the post-mission remainder is never smaller than the mission
+# xp itself). "bonus" and "overload" always clear this automatically; only a
+# manually typed number (or "rank" with a high mission multiplier) can hit it.
+
+MISSION_MULT_OPTIONS = (0, 1, 2, 3)
+
+def _bonus_total_xp():
+    """Total xp from fully clearing the 4x and 2x stages (not 1x, not overload)."""
+    t, _, _ = compute_xp(BASIC_4X + BASIC_2X)
+    return int(t)
+
+def _overload_total_xp():
+    """Total xp from filling the entire basic cap (start of overload stage)."""
+    t, _, _ = compute_xp(BASIC_CAP)
+    return int(t)
+
+RANK_TARGET_XP = XP_PER_RANK  # 5000 — exactly one rank's worth of total xp
+
+def mission_earned_for_mult(week, mult):
+    """mult in {0,1,2,3} -> mission xp earned that week, capped at mission_max."""
+    mm = mission_max(week)
+    earned = round(mult * mm / 3)
+    return min(earned, mm)
+
+def resolve_xp_target(xp_arg, week, mission_mult):
+    """Resolve the user's xp choice into a total-xp-for-the-week number.
+
+    xp_arg: an int/float (explicit total xp) or one of "bonus" / "overload" / "rank".
+    Returns (total_xp, error_message_or_None).
+    """
+    mission_earned = mission_earned_for_mult(week, mission_mult)
+
+    if isinstance(xp_arg, str):
+        key = xp_arg.lower()
+        if key == "bonus":
+            total_xp = _bonus_total_xp()
+        elif key == "overload":
+            total_xp = _overload_total_xp()
+        elif key == "rank":
+            total_xp = RANK_TARGET_XP
+        else:
+            return None, f"Unknown xp option '{xp_arg}'. Use a number, 'bonus', 'overload', or 'rank'."
+    else:
+        total_xp = xp_arg
+
+    if total_xp < 2 * mission_earned:
+        return None, (
+            f"XP target ({int(total_xp)}) is too low for mission multiplier {mission_mult} "
+            f"(earns {mission_earned} mission xp this week). Target must be at least "
+            f"{2 * mission_earned} (2x the mission xp earned)."
+        )
+    return total_xp, None
+
+def build_projection(data, mission_mult=3, xp_arg="overload"):
+    """Project weekly data from the week after the last recorded one through
+    year-end, under a fixed weekly mission multiplier and xp target.
+
+    mission_mult: 0-3, see mission_earned_for_mult().
+    xp_arg: total weekly xp target — number, "bonus", "overload", or "rank".
+            Mission xp is included in this target, so it's subtracted out
+            before the remainder is converted to basic xp via the xp curve.
+
+    Returns (proj_dict, error_message_or_None). On error, proj_dict is {}.
     """
     if not data:
-        return {}
+        return {}, None
     last_w   = max(int(k) for k in data)
     prev_abs = data[str(last_w)]["abs_xp"]
     proj     = {}
-    cap_xp, _, _ = compute_xp(BASIC_CAP)
+
     for w in range(last_w + 1, last_week_of_year() + 1):
         mm = mission_max(w)
+        mission_a = mission_earned_for_mult(w, mission_mult)
 
-        if weekly_cap is None:
-            gained_total = cap_xp + mm
-            basic        = BASIC_CAP
-            reduced      = 0
-            mission_a    = mm
-        else:
-            gained_total = max(0, weekly_cap)
-            mission_a    = min(mm, gained_total)
-            remaining    = max(0, gained_total - mission_a)
-            # Convert remaining (post-mission) XP into basic XP via the curve,
-            # capping basic XP at BASIC_CAP (can't exceed normal weekly cap).
-            basic_uncapped = reverse_basic_from_total(remaining)
-            basic          = min(basic_uncapped, BASIC_CAP)
-            _, reduced, _  = compute_xp(basic)
+        total_xp, err = resolve_xp_target(xp_arg, w, mission_mult)
+        if err:
+            return {}, err
 
-        new_abs = prev_abs + gained_total
+        remaining      = max(0, total_xp - mission_a)
+        basic_uncapped = reverse_basic_from_total(remaining)
+        basic          = int(min(basic_uncapped, BASIC_CAP))
+        gained_basic, reduced, _ = compute_xp(basic)
+
+        gained_total = mission_a + gained_basic
+        new_abs = prev_abs + int(gained_total)
         si, ei  = get_week_dates_iso(w)
         m, r, x = abs_to_mrx(new_abs)
         proj[str(w)] = {
@@ -721,113 +818,156 @@ def build_projection(data, weekly_cap=None):
             "date_start": si, "date_end": ei,
         }
         prev_abs = new_abs
-    return proj
+    return proj, None
 
-def run_table(mode="existing", week_range=None, weekly_cap=None):
-    """
-    mode: "existing" | "projected" | "full" | "auto"
-    When week_range spans both real and projected weeks, auto-prints both tables.
-    weekly_cap: optional abs_xp amount earned per week, used for projected weeks
-    (see build_projection). None = default overload assumption.
-    """
-    data = load()
-    proj = build_projection(data, weekly_cap=weekly_cap)
+_MISSION_MULT_LABELS = {0: "none (0/3)", 1: "low (1/3)", 2: "high (2/3)", 3: "full (3/3)"}
 
-    def filter_w(d):
-        if week_range is None:
-            return d
-        return {k: v for k, v in d.items() if int(k) in week_range}
+def _ask_mission_mult():
+    console.print("[dim]Mission XP per week: 0 = none, 1 = 1/3, 2 = 2/3, 3 = full[/dim]")
+    while True:
+        raw = input("Mission multiplier [0-3] (default 3): ").strip()
+        if not raw:
+            return 3
+        if raw in ("0", "1", "2", "3"):
+            return int(raw)
+        console.print("[red]Enter 0, 1, 2, or 3.[/red]")
 
-    real_rows = filter_w(data)
-    proj_rows = filter_w(proj)
-
-    proj_title = (
-        "CS2 XP – Projected Data (overload each week)" if weekly_cap is None
-        else f"CS2 XP – Projected Data ({weekly_cap} abs XP/week)"
+def _ask_xp_target():
+    console.print(
+        "[dim]Weekly XP target: a number, or 'bonus' (7667 total / 2667 basic), "
+        "'overload' (11167 total / 6167 basic), 'rank' (5000 total)[/dim]"
     )
+    raw = input("XP target (default overload): ").strip().lower()
+    if not raw:
+        return "overload"
+    if raw in ("bonus", "overload", "rank"):
+        return raw
+    try:
+        return int(raw)
+    except ValueError:
+        return raw  # let resolve_xp_target() report the error uniformly
 
-    # "auto" mode: if a range is given that covers both real and projected, show both
-    if mode == "existing":
-        if real_rows:
-            print_data_table(real_rows, "CS2 XP – Recorded Data")
-        else:
-            console.print("[dim]No recorded data for those weeks.[/dim]")
+def run_projection(mission_mult=None, xp_arg=None):
+    """Interactive/argument-driven year-end projection from the last
+    recorded week onward."""
+    data = load()
+    if not data:
+        console.print("[dim]No recorded data yet — nothing to project from.[/dim]")
+        return
 
-    elif mode == "projected":
-        if proj_rows:
-            print_data_table(proj_rows, proj_title)
-        else:
-            console.print("[dim]No projected data for those weeks.[/dim]")
+    if mission_mult is None:
+        mission_mult = _ask_mission_mult()
+    if xp_arg is None:
+        xp_arg = _ask_xp_target()
 
-    elif mode == "full":
-        if real_rows:
-            print_data_table(real_rows, "CS2 XP – Recorded Data")
-        else:
-            console.print("[dim]No recorded data for those weeks.[/dim]")
-        if proj_rows:
-            print_data_table(proj_rows, proj_title)
-        else:
-            console.print("[dim]No projected data for those weeks.[/dim]")
+    proj, err = build_projection(data, mission_mult=mission_mult, xp_arg=xp_arg)
+    if err:
+        console.print(f"[red]{err}[/red]")
+        return
+    if not proj:
+        console.print("[dim]Nothing to project — already at year-end.[/dim]")
+        return
 
-    elif mode == "auto":
-        # When a week range spans real + projected weeks: show both tables
-        if real_rows and proj_rows:
-            print_data_table(real_rows, "CS2 XP – Recorded Data")
-            print_data_table(proj_rows, proj_title)
-        elif real_rows:
-            print_data_table(real_rows, "CS2 XP – Recorded Data")
-        elif proj_rows:
-            print_data_table(proj_rows, proj_title)
-        else:
-            console.print("[dim]No data for those weeks.[/dim]")
+    xp_label = xp_arg if isinstance(xp_arg, str) else f"{int(xp_arg)} xp/week"
+    title = (
+        f"CS2 XP – Projection "
+        f"(mission ×{mission_mult} [{_MISSION_MULT_LABELS[mission_mult]}], target: {xp_label})"
+    )
+    print_data_table(proj, title, highlight=set())
 
 # ═══════════════════════════════════════════
 # HELP
 # ═══════════════════════════════════════════
+#
+# Two views:
+#   help            -> conceptual overview: what the app does, how the XP
+#                      curve / stages / mission XP work, what each XP type means.
+#   help -commands  -> compact reference of every command and its arguments.
+#   (-c is the short alias for -commands)
 
-HELP_TEXT = f"""[bold cyan]{APP_NAME}[/bold cyan] [dim]v{__version__}[/dim] — Help
+HELP_OVERVIEW = f"""[bold cyan]{APP_NAME}[/bold cyan] [dim]v{__version__}[/dim]
 
-[bold]Commands[/bold]
+[bold]What this app does[/bold]
+  CS2 awards XP at different *rates* depending on how much XP you've already
+  earned that week. This app tracks your weekly Medal/Rank/XP, works out how
+  much of that was earned at each rate, and projects your progress forward.
+
+[bold]The weekly XP stages[/bold]
+  Each week starts fresh. XP comes in two flavours:
+
+    [cyan]Basic XP[/cyan]  — the "raw" XP the game would give with no bonus at all.
+    [cyan]Bonus XP[/cyan]  — extra XP added on top, depending on the stage you're in.
+    [cyan]Total XP[/cyan]  — Basic + Bonus. This is what actually lands in your Rank/XP bar.
+
+  As you earn Basic XP during the week, you move through stages:
+
+    [cyan]4x[/cyan]      first {BASIC_4X} Basic XP   -> up to {XP_STAGES[0][2]} Total XP
+    [cyan]2x[/cyan]      next  {BASIC_2X} Basic XP   -> up to {XP_STAGES[1][2]} Total XP
+    [cyan]1x[/cyan]      next  {BASIC_1X} Basic XP   -> up to {XP_STAGES[2][2]} Total XP
+    [cyan]0.175x[/cyan]  ("overload") everything after {BASIC_CAP} Basic XP, at a reduced rate
+
+  Each capped stage has a fixed bonus-XP pool. The 4x stage's pool runs out
+  slightly before its last Basic XP point would mathematically use it all up
+  ({BASIC_4X} × 4 = {BASIC_4X*4}, but the real cap is {XP_STAGES[0][2]}) — that
+  last point only gets whatever's left of the pool, and the 1 XP the pool
+  can't cover is simply never awarded. Status and Update both account for this.
+
+[bold]Mission XP[/bold]
+  Separate from the stages above. Each week has a fixed mission XP cap
+  (rotates through a cycle, see [cyan]status[/cyan]). Mission XP is added on top of
+  whatever Basic/Bonus XP you've earned — it doesn't consume any stage pool.
+
+[bold]Where this shows up[/bold]
+  [cyan]status[/cyan]  — your current week: stage, progress bars for Stage/Basic/Total/
+            Mission XP, a per-stage earned/left breakdown, and time-to-next-
+            rank or weekly-drop estimates.
+  [cyan]update[/cyan]  — record what you actually earned this week (or a past week).
+  [cyan]table[/cyan]   — every recorded week in one table.
+  [cyan]projection[/cyan] — model the rest of the year under a chosen weekly effort
+            level (how much mission XP, how much total XP) to see your
+            medal/rank pace.
+
+Type [cyan]help -commands[/cyan] (or [cyan]help -c[/cyan]) for the full command reference,
+or [cyan]<command> -args[/cyan] to see a command's own arguments."""
+
+HELP_COMMANDS = f"""[bold cyan]{APP_NAME}[/bold cyan] [dim]v{__version__}[/dim] — Commands
 
   [cyan]status[/cyan] / [cyan]s[/cyan] / [cyan]stat[/cyan]
       Show XP progress for the current week.
       [cyan]-week N[/cyan] / [cyan]-w N[/cyan]   Show a specific week instead.
-      [cyan]-full[/cyan] / [cyan]-f[/cyan]         Alias (same as no argument).
 
   [cyan]update[/cyan] / [cyan]u[/cyan] / [cyan]upd[/cyan]
-      Update week data. Default / [cyan]-full[/cyan] / [cyan]-f[/cyan]: asks week, medal, rank, xp, mission.
+      Update week data. No argument: asks week, medal, rank, xp, mission.
       Past weeks show a before/after preview before saving.
-      [cyan]-medal[/cyan] / [cyan]-med[/cyan]      Ask medal, rank, xp   (current week).
-      [cyan]-rank[/cyan]  / [cyan]-r[/cyan]          Ask rank, xp           (current week).
-      [cyan]-xp[/cyan]                  Ask xp only            (current week).
-      [cyan]-mission[/cyan] / [cyan]-mis[/cyan]   Ask mission XP only    (current week).
+      [cyan]-medal[/cyan] /[cyan]-med[/cyan]    Ask medal, rank, xp   (current week).
+      [cyan]-rank[/cyan]  /[cyan]-r[/cyan]      Ask rank, xp           (current week).
+      [cyan]-xp[/cyan]              Ask xp only            (current week).
+      [cyan]-mission[/cyan]/[cyan]-mis[/cyan]   Ask mission XP only    (current week).
       [bold yellow]⚠[/bold yellow] reduced_xp > {REDUCED_XP_WARN} triggers a warning before saving.
 
   [cyan]delete[/cyan] / [cyan]d[/cyan] / [cyan]del[/cyan]  [N | N-M]
       Delete week(s). Accepts single week or range: [cyan]d 5[/cyan]  [cyan]d 3-10[/cyan]
       If no range given in command, prompts (shows existing weeks first).
       Shows before/after preview including the first surviving next week.
-      [cyan]-full[/cyan] / [cyan]-f[/cyan]         Alias (same as no argument).
 
-  [cyan]table[/cyan] / [cyan]t[/cyan]  [N | N-M]
-      Display all recorded data. Optionally filter: [cyan]t 5[/cyan]  [cyan]t 1-10[/cyan]
-      When range spans real + projected weeks, both tables are shown automatically.
-      [cyan]-existing[/cyan] / [cyan]-e[/cyan]     Only recorded weeks (default).
-      [cyan]-projected[/cyan] / [cyan]-p[/cyan]    Only projected weeks (overload each week to year-end).
-      [cyan]-projected N[/cyan] / [cyan]-p N[/cyan]  Same, but assumes only N abs XP earned each week
-                              instead of a full overload week. Useful if you can't/won't
-                              grind a full week and want to see the realistic medal pace.
-                              Mission XP is still credited first each week (it's free);
-                              N just caps the total (mission + basic) XP earned that week.
-                              If N omitted, falls back to the default overload assumption.
-      [cyan]-full[/cyan] / [cyan]-f[/cyan]          Both recorded and projected.
-      Examples: [cyan]t[/cyan]  [cyan]t -f[/cyan]  [cyan]t 1-10[/cyan]  [cyan]t -p 3-8[/cyan]  [cyan]t -p 1000[/cyan]
+  [cyan]table[/cyan] / [cyan]t[/cyan]
+      Display every recorded week. No arguments.
 
-  [cyan]build[/cyan] / [cyan]b[/cyan]
-      Compile cs2xp.py into a standalone .exe using PyInstaller.
-      The .exe is placed in the same folder as this script.
-      All temporary build files are automatically deleted afterwards.
-      PyInstaller is installed automatically if not already present.
+  [cyan]projection[/cyan] / [cyan]proj[/cyan] / [cyan]p[/cyan]
+      Project the rest of the year (from the last recorded week) under a
+      chosen weekly effort level. No argument: asks both choices below.
+      [cyan]-mission N[/cyan]   Mission multiplier, N in 0-3 -> earns N/3 of that
+                     week's mission cap. 0 = none, 3 = full.
+      [cyan]-xp VALUE[/cyan]    Weekly total XP target (mission xp included in it):
+                     a number, or one of:
+                       [cyan]bonus[/cyan]     clear the 4x + 2x stages fully
+                                  ({_bonus_total_xp()} total xp / {BASIC_4X+BASIC_2X} basic xp)
+                       [cyan]overload[/cyan]  fill the entire weekly cap
+                                  ({_overload_total_xp():.0f} total xp / {BASIC_CAP} basic xp)
+                       [cyan]rank[/cyan]      exactly one rank's worth
+                                  ({RANK_TARGET_XP} total xp)
+                     Must be at least 2x that week's mission xp earned.
+      Examples: [cyan]p[/cyan]  [cyan]p -mission 3 -xp overload[/cyan]  [cyan]p -mission 0 -xp 4000[/cyan]
 
   [cyan]upgrade[/cyan] / [cyan]upg[/cyan]
       Check GitHub for a newer release and install it in place.
@@ -838,191 +978,182 @@ HELP_TEXT = f"""[bold cyan]{APP_NAME}[/bold cyan] [dim]v{__version__}[/dim] — 
       Show where the program is running from and where its data file is stored.
 
   [cyan]help[/cyan] / [cyan]h[/cyan]
-      Show this help message.
-      [cyan]-full[/cyan] / [cyan]-f[/cyan]         Alias (same as no argument).
+      Show the conceptual overview (this app, stages, mission/basic/bonus/total XP).
+      [cyan]-commands[/cyan] / [cyan]-c[/cyan]   Show this command reference instead.
 
   [cyan]exit[/cyan] / [cyan]quit[/cyan] / [cyan]stop[/cyan] / [cyan]e[/cyan] / [cyan]q[/cyan]
       Exit the tracker.
 
 [bold]Notes[/bold]
   Commands and arguments are case-insensitive.
-  Press Enter at any prompt to keep the current stored value.
+  Add [cyan]-args[/cyan] after any command to see just its valid arguments.
+  Press Enter at any prompt to keep the current/default value.
   Editing a past week cascades recalculation into the following week.
   XP total cannot be lower than the previous week's abs_xp."""
 
-def run_help():
-    console.print(Panel(HELP_TEXT, expand=False))
+def run_help(show_commands=False):
+    console.print(Panel(HELP_COMMANDS if show_commands else HELP_OVERVIEW, expand=False))
 
 # ═══════════════════════════════════════════
 # COMMAND PARSING
 # ═══════════════════════════════════════════
+#
+# Each command has its own small set of valid flags, declared in ARG_SPECS
+# below. Every command also implicitly accepts -args (print that command's
+# valid flags and stop, instead of running it) — handled generically so
+# individual commands don't need to know about it.
 
 _VERBS = {
     "status": "status", "s":    "status", "stat": "status",
     "update": "update", "u":    "update", "upd":  "update",
     "delete": "delete", "d":    "delete", "del":  "delete",
     "table":  "table",  "t":    "table",
+    "projection": "projection", "proj": "projection", "p": "projection",
     "help":   "help",   "h":    "help",
-    "build":  "build",  "b":    "build",
     "upgrade": "upgrade", "upg": "upgrade",
     "locate":  "locate",  "loc": "locate",
     "exit":   "exit",   "quit": "exit",   "stop": "exit",
     "e":      "exit",   "q":    "exit",
 }
 
-# Args that set a named mode per command
+# Human-readable "Valid: ..." strings shown on -args and on unknown-flag errors.
+# Grouped pairs are shown as 'long /short' per the requested format.
+ARG_HELP = {
+    "status":     "-week /-w",
+    "update":     "-medal /-med  |  -rank /-r  |  -xp  |  -mission /-mis",
+    "delete":     "(none — pass a week or range, e.g. 'd 5' or 'd 3-10')",
+    "table":      "(none)",
+    "projection": "-mission N  |  -xp VALUE",
+    "help":       "-commands /-c",
+    "upgrade":    "(none)",
+    "locate":     "(none)",
+}
+
+# Flags that set a named mode per command (excludes -args, handled generically)
 _CMD_MODES = {
     "update": {
-        "-full": "full", "-f": "full",
         "-medal": "medal", "-med": "medal",
         "-rank":  "rank",  "-r":   "rank",
         "-xp":    "xp",
         "-mission": "mission", "-mis": "mission",
     },
-    "table": {
-        "-existing": "existing", "-e": "existing",
-        "-projected": "projected", "-p": "projected",
-        "-full": "full", "-f": "full",
-    },
-    # -full / -f accepted but ignored on these (no-op alias)
-    "status": {"-full": None, "-f": None, "-week": "_week", "-w": "_week"},
-    "delete": {"-full": None, "-f": None},
-    "help":   {"-full": None, "-f": None},
-    "build":  {},
+    "status": {"-week": "_week", "-w": "_week"},
+    "help":   {"-commands": "commands", "-c": "commands"},
+    "delete": {},
+    "table":  {},
+    "projection": {"-mission": "_mission", "-xp": "_xp"},
     "upgrade": {},
     "locate":  {},
 }
 
 _DEFAULT_MODES = {
     "update": "full",
-    "table":  "existing",
 }
 
-def parse_command(raw: str):
-    """Returns (cmd, mode, week, week_range, weekly_cap, error) — all Nones on empty input."""
+class ParsedCommand:
+    """Result of parsing one line of input."""
+    __slots__ = ("cmd", "mode", "week", "week_range",
+                 "mission_mult", "xp_arg", "show_args", "error")
+
+    def __init__(self):
+        self.cmd = None
+        self.mode = None
+        self.week = None
+        self.week_range = None
+        self.mission_mult = None
+        self.xp_arg = None
+        self.show_args = False
+        self.error = None
+
+def _err(msg):
+    p = ParsedCommand()
+    p.error = msg
+    return p
+
+def parse_command(raw: str) -> ParsedCommand:
+    """Parse one line of input into a ParsedCommand."""
     parts = raw.strip().lower().split()
     if not parts:
-        return None, None, None, None, None, None
+        return ParsedCommand()
 
     verb = parts[0]
     cmd  = _VERBS.get(verb)
     if cmd is None:
-        return None, None, None, None, None, f"[red]Unknown command '{verb}'. Type 'help'.[/red]"
+        return _err(f"[red]Unknown command '{verb}'. Type 'help -commands'.[/red]")
+
+    args = parts[1:]
+
+    # Universal -args: show this command's valid flags and stop, regardless
+    # of anything else on the line.
+    if "-args" in args:
+        p = ParsedCommand()
+        p.cmd = cmd
+        p.show_args = True
+        return p
 
     valid_flags = _CMD_MODES.get(cmd, {})
-    args        = parts[1:]
-    mode        = None
-    week        = None
-    week_range  = None
-    weekly_cap  = None
-    i           = 0
+    result      = ParsedCommand()
+    result.cmd  = cmd
+    i = 0
 
     while i < len(args):
         a = args[i]
 
-        # Flagged args
         if a in valid_flags:
             mapped = valid_flags[a]
             if mapped == "_week":
-                # Consume next token as week number
                 if i + 1 >= len(args):
-                    return None, None, None, None, None, f"[red]{a} requires a week number.[/red]"
+                    return _err(f"[red]{a} requires a week number.[/red]")
                 try:
-                    week = int(args[i + 1])
+                    result.week = int(args[i + 1])
                 except ValueError:
-                    return None, None, None, None, None, f"[red]{a} requires an integer.[/red]"
+                    return _err(f"[red]{a} requires an integer.[/red]")
                 i += 2; continue
-            elif mapped is not None:
-                mode = mapped
-                # -projected / -p may optionally be followed by an integer:
-                # the abs_xp amount earned per week, to use instead of the
-                # default overload assumption when building the projection.
-                if mapped == "projected" and i + 1 < len(args):
-                    nxt = args[i + 1]
-                    if nxt.lstrip("-").isdigit():
-                        weekly_cap = int(nxt)
-                        i += 2; continue
-            i += 1; continue
-
-        # Universal -full / -f on any command (no-op if not in valid_flags already)
-        if a in ("-full", "-f") and cmd != "exit":
-            if cmd in ("update", "table"):
-                mode = "full"
+            if mapped == "_mission":
+                if i + 1 >= len(args):
+                    return _err(f"[red]{a} requires a number from 0 to 3.[/red]")
+                try:
+                    mm = int(args[i + 1])
+                except ValueError:
+                    return _err(f"[red]{a} requires an integer from 0 to 3.[/red]")
+                if mm not in (0, 1, 2, 3):
+                    return _err(f"[red]{a} must be 0, 1, 2, or 3.[/red]")
+                result.mission_mult = mm
+                i += 2; continue
+            if mapped == "_xp":
+                if i + 1 >= len(args):
+                    return _err(f"[red]{a} requires a value (number, bonus, overload, or rank).[/red]")
+                nxt = args[i + 1]
+                if nxt in ("bonus", "overload", "rank"):
+                    result.xp_arg = nxt
+                else:
+                    try:
+                        result.xp_arg = int(nxt)
+                    except ValueError:
+                        return _err(f"[red]{a} requires a number, 'bonus', 'overload', or 'rank'.[/red]")
+                i += 2; continue
+            result.mode = mapped
             i += 1; continue
 
         # Unknown flag
         if a.startswith("-"):
-            valids = "  ".join(valid_flags) if valid_flags else "(none)"
-            return None, None, None, None, None, (
+            valids = ARG_HELP.get(cmd, "(none)")
+            return _err(
                 f"[red]Unknown argument '{a}' for '{verb}'.[/red]\n"
                 f"[dim]Valid: {valids}[/dim]"
             )
 
-        # Positional: week range for table and delete
-        if cmd in ("table", "delete") and week_range is None:
+        # Positional: week range for delete only (table/projection take no positionals)
+        if cmd == "delete" and result.week_range is None:
             wr = parse_week_range(a)
             if wr is not None:
-                week_range = wr; i += 1; continue
+                result.week_range = wr; i += 1; continue
 
-        return None, None, None, None, None, f"[red]Unexpected token '{a}' for '{verb}'. Type 'help'.[/red]"
+        return _err(f"[red]Unexpected token '{a}' for '{verb}'. Type 'help -commands'.[/red]")
 
-    mode = mode or _DEFAULT_MODES.get(cmd)
-    return cmd, mode, week, week_range, weekly_cap, None
+    result.mode = result.mode or _DEFAULT_MODES.get(cmd)
+    return result
 
-# ═══════════════════════════════════════════
-# BUILD EXE
-# ═══════════════════════════════════════════
-
-def run_build():
-    """Create a single-file .exe via PyInstaller, then clean up all build artefacts."""
-    if IS_FROZEN:
-        console.print("[yellow]Build is not available when running as a compiled .exe.[/yellow]")
-        return
-    import subprocess, shutil, tempfile
-
-    script = Path(__file__).resolve()
-    out_dir = script.parent
-
-    try:
-        import PyInstaller  # noqa: F401
-    except ImportError:
-        console.print("[yellow]PyInstaller not found. Installing…[/yellow]")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
-        console.print("[green]PyInstaller installed.[/green]")
-
-    console.print(f"[cyan]Building {script.stem}.exe → {out_dir}[/cyan]")
-
-    # Use a temp dir for ALL PyInstaller work so nothing leaks into the project folder
-    with tempfile.TemporaryDirectory() as tmp:
-        cmd = [
-            sys.executable, "-m", "PyInstaller",
-            "--onefile",
-            "--noconfirm",
-            "--clean",
-            f"--distpath={out_dir}",   # .exe lands directly in the script folder
-            f"--workpath={tmp}",        # build/ goes into the temp dir
-            f"--specpath={tmp}",        # .spec file goes into the temp dir
-            str(script),
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            console.print("[red]Build failed:[/red]")
-            console.print(result.stderr[-3000:])  # last 3 000 chars of stderr
-            return
-
-    # Any stray build/ or dist/ folders that PyInstaller may have created beside the script
-    for artefact in ("build", "__pycache__"):
-        p = out_dir / artefact
-        if p.exists():
-            shutil.rmtree(p, ignore_errors=True)
-
-    exe_name = script.stem + (".exe" if sys.platform == "win32" else "")
-    exe_path = out_dir / exe_name
-    if exe_path.exists():
-        console.print(f"[green]✓ Built:[/green] {exe_path}")
-    else:
-        console.print(f"[yellow]Build finished but {exe_path} not found — check output above.[/yellow]")
 
 # ═══════════════════════════════════════════
 # UPGRADE APP (self-update)
@@ -1150,7 +1281,7 @@ def run_locate():
     prog_path = Path(sys.executable).resolve() if IS_FROZEN else Path(__file__).resolve()
     kind      = "compiled .exe" if IS_FROZEN else "Python script"
 
-    console.print("[bold]Locations[/bold]")
+    console.print("\n[bold]Locations[/bold]")
     console.print(f"  Program   : {prog_path}  [dim]({kind})[/dim]")
     console.print(f"  App folder: {app_dir()}")
     console.print(f"  Data file : {DATA_FILE}  [dim]({'exists' if DATA_FILE.exists() else 'not created yet'})[/dim]")
@@ -1172,30 +1303,26 @@ def interactive():
             if not raw:
                 continue
 
-            cmd, mode, week, week_range, weekly_cap, err = parse_command(raw)
-            if err:
-                console.print(err); continue
-            if cmd is None:
+            p = parse_command(raw)
+            if p.error:
+                console.print(p.error); continue
+            if p.cmd is None:
                 continue
 
-            if   cmd == "exit":   console.print("[dim]Session closed.[/dim]"); break
-            elif cmd == "status": run_status(target_week=week)
-            elif cmd == "update": run_update(mode=mode or "full")
-            elif cmd == "delete": run_delete(week_range=week_range)
-            elif cmd == "build":
-                if IS_FROZEN:
-                    console.print("[yellow]Build is not available when running as a compiled .exe.[/yellow]")
-                else:
-                    run_build()
-            elif cmd == "upgrade": run_upgrade()
-            elif cmd == "locate":  run_locate()
-            elif cmd == "table":
-                # Auto-detect mixed real/projected range
-                eff_mode = mode or "existing"
-                if week_range and eff_mode == "existing":
-                    eff_mode = "auto"
-                run_table(mode=eff_mode, week_range=week_range, weekly_cap=weekly_cap)
-            elif cmd == "help":   run_help()
+            # Universal -args: show this command's valid flags and stop.
+            if p.show_args:
+                console.print(f"[dim]Valid for '{p.cmd}': {ARG_HELP.get(p.cmd, '(none)')}[/dim]")
+                continue
+
+            if   p.cmd == "exit":       console.print("[dim]Session closed.[/dim]"); break
+            elif p.cmd == "status":     run_status(target_week=p.week)
+            elif p.cmd == "update":     run_update(mode=p.mode or "full")
+            elif p.cmd == "delete":     run_delete(week_range=p.week_range)
+            elif p.cmd == "table":      run_table()
+            elif p.cmd == "projection": run_projection(mission_mult=p.mission_mult, xp_arg=p.xp_arg)
+            elif p.cmd == "upgrade":    run_upgrade()
+            elif p.cmd == "locate":     run_locate()
+            elif p.cmd == "help":       run_help(show_commands=(p.mode == "commands"))
 
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Session closed.[/dim]"); break
