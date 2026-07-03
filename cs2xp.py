@@ -24,7 +24,7 @@ console = Console()
 # ═══════════════════════════════════════════
 
 APP_NAME    = "CS2 XP Tracker"
-__version__ = "1.0.0"
+__version__ = "0.1.0-alpha"
 
 GITHUB_OWNER = "11andriiko"
 GITHUB_REPO  = "cs2-xp-tracker"
@@ -552,7 +552,7 @@ def run_update(mode="full"):
     if w != cur_w:
         console.print(
             f"[yellow]⚠  Editing Week {w} (current: Week {cur_w}).[/yellow]\n"
-            f"[yellow]   This will affect Week {w} and Week {w+1}'s derived values.[/yellow]"
+            f"[yellow]   This will affect future weeks via cascade.[/yellow]"
         )
 
     old = {"medal": row["medal"], "rank": row["rank"],
@@ -582,57 +582,125 @@ def run_update(mode="full"):
     if new == old:
         console.print("[dim]No changes made.[/dim]"); return
 
-    # ── Compute ──
+    # ── Compute current week ──
     prev_abs   = data.get(str(w - 1), {}).get("abs_xp", to_abs(new["medal"], new["rank"], new["xp"]))
     new_fields = compute_row_fields(new["medal"], new["rank"], new["xp"], new["mission"], prev_abs)
 
     if new_fields["reduced_xp"] > REDUCED_XP_WARN:
         console.print(
             f"[yellow]⚠  Reduced XP is [bold]{new_fields['reduced_xp']}[/bold] "
-            f"(threshold: {REDUCED_XP_WARN}). A lot of XP earned at 0.175x rate.[/yellow]"
+            f"(threshold: {REDUCED_XP_WARN}).[/yellow]"
         )
         if not _confirm("Save anyway? (yes/no)"):
             console.print("[red]Update cancelled.[/red]"); return
 
-    # ── Cascade to next week ──
-    next_w   = str(w + 1)
-    next_row = data.get(next_w)
-    next_fields = compute_row_fields(
-        next_row["medal"], next_row["rank"], next_row["xp"],
-        next_row["mission_actual"], new_fields["abs_xp"]
-    ) if next_row else None
-
-    # ── Build after-state ──
+    # ── Recursive cascade forward ──
     data_after = {k: dict(v) for k, v in data.items()}
-    data_after[str(w)].update(new_fields)
-    if next_fields:
-        data_after[next_w].update(next_fields)
 
-    # ── Preview ──
-    if w != cur_w:
-        affected = [x for x in [w - 1, w, w + 1] if str(x) in data or x == w]
-        print_before_after(data, data_after, affected)
-    else:
-        console.print("\n[bold]Preview:[/bold]")
-        for k, v in new_fields.items():
-            old_v = row.get(k)
-            if v != old_v:
-                if isinstance(v, (int, float)) and isinstance(old_v, (int, float)):
-                    delta = v - old_v
-                    sign  = "+" if delta >= 0 else ""
-                    diff  = f" [yellow]({sign}{delta})[/yellow]"
+    # apply updated week
+    data_after[str(w)].update(new_fields)
+
+    prev_abs = new_fields["abs_xp"]
+    cur_week = w + 1
+
+    affected_weeks = [w]
+
+    while True:
+        key = str(cur_week)
+        if key not in data_after:
+            break
+
+        row_next = data_after[key]
+
+        original = dict(row_next)
+
+        # ── Case 1: enforce monotonic abs_xp ──
+        if row_next["abs_xp"] < prev_abs:
+            forced_abs = prev_abs
+            m, r, x = abs_to_mrx(forced_abs)
+
+            updated = compute_row_fields(
+                m,
+                r,
+                x,
+                row_next["mission_actual"],
+                prev_abs
+            )
+            updated["abs_xp"] = forced_abs
+
+        else:
+            # ── Case 2: abs is valid, but prev_abs changed → recompute derived values ──
+            updated = compute_row_fields(
+                row_next["medal"],
+                row_next["rank"],
+                row_next["xp"],
+                row_next["mission_actual"],
+                prev_abs
+            )
+            updated["abs_xp"] = row_next["abs_xp"]
+
+        # check if anything changed
+        if all(updated[k] == original.get(k) for k in updated):
+            # nothing changed → stop cascade
+            break
+
+        # apply update
+        data_after[key].update(updated)
+        affected_weeks.append(cur_week)
+
+        prev_abs = updated["abs_xp"]
+        cur_week += 1
+
+    # ── Full cascade diff preview ──
+    console.print("\n[bold]Cascade Preview (full diff)[/bold]")
+
+    changed_weeks = []
+
+    for wk in affected_weeks:
+        key = str(wk)
+        before = data.get(key)
+        after  = data_after.get(key)
+
+        if not before or not after:
+            continue
+
+        diffs = []
+
+        for k in TABLE_COLS:
+            b = before.get(k)
+            a = after.get(k)
+            if b != a:
+                if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                    delta = a - b
+                    sign = "+" if delta >= 0 else ""
+                    diffs.append(f"{k}: {b} → {a} ({sign}{delta})")
                 else:
-                    diff = ""
-                console.print(f"  {k}: [dim]{old_v}[/dim] → [green]{v}[/green]{diff}")
+                    diffs.append(f"{k}: {b} → {a}")
+
+        if diffs:
+            changed_weeks.append(wk)
+            console.print(f"\n[cyan]Week {wk}[/cyan]")
+            for d in diffs:
+                console.print(f"  {d}")
+
+    if not changed_weeks:
+        console.print("[dim]No actual changes detected.[/dim]")
+    else:
+        console.print(
+            f"\n[bold yellow]Total weeks changed:[/bold yellow] {len(changed_weeks)} → "
+            f"{', '.join(map(str, changed_weeks))}"
+        )
+
+    if not _confirm("Apply these changes? (yes/no)"):
+        console.print("[dim]Cancelled.[/dim]")
+        return
 
     # ── Save ──
-    data[str(w)].update(new_fields)
-    if next_fields and next_row:
-        data[next_w].update(next_fields)
+    data = data_after
     save(data)
+
     console.print(
-        f"\n[green]✓ Saved:[/green] Week: {w} | "
-        f"Medal: {new['medal']} | Rank: {new['rank']} | XP: {new['xp']} | Mission: {new['mission']}"
+        f"\n[green]✓ Saved with cascade:[/green] Weeks updated → {', '.join(map(str, affected_weeks))}"
     )
 
 # ═══════════════════════════════════════════
