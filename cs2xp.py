@@ -651,8 +651,10 @@ def run_update(mode="full"):
         prev_abs = updated["abs_xp"]
         cur_week += 1
 
-    # ── Full cascade diff preview ──
-    console.print("\n[bold]Cascade Preview (full diff)[/bold]")
+    # ── Diff preview ──
+    is_cascade = (w != cur_w)
+    if is_cascade:
+        console.print("\n[bold]Cascade Preview (full diff)[/bold]")
 
     changed_weeks = []
 
@@ -685,23 +687,27 @@ def run_update(mode="full"):
 
     if not changed_weeks:
         console.print("[dim]No actual changes detected.[/dim]")
-    else:
+    elif is_cascade:
         console.print(
             f"\n[bold yellow]Total weeks changed:[/bold yellow] {len(changed_weeks)} → "
             f"{', '.join(map(str, changed_weeks))}"
         )
 
-    if not _confirm("Apply these changes? (yes/no)"):
-        console.print("[dim]Cancelled.[/dim]")
-        return
+    if is_cascade:
+        if not _confirm("Apply these changes? (yes/no)"):
+            console.print("[dim]Cancelled.[/dim]")
+            return
 
     # ── Save ──
     data = data_after
     save(data)
 
-    console.print(
-        f"\n[green]✓ Saved with cascade:[/green] Weeks updated → {', '.join(map(str, affected_weeks))}"
-    )
+    if is_cascade:
+        console.print(
+            f"\n[green]✓ Saved with cascade:[/green] Weeks updated → {', '.join(map(str, affected_weeks))}"
+        )
+    else:
+        console.print("\n[green]✓ Saved.[/green]")
 
 # ═══════════════════════════════════════════
 # DELETE
@@ -782,19 +788,17 @@ def run_table():
 #   mission multiplier  [0, 1, 2, 3] -> mission_earned = mult * mission_max / 3
 #       0 = skip missions entirely, 3 = always complete the full weekly cycle.
 #
-#   xp target  -> how much TOTAL (basic + bonus) xp is earned that week:
-#       <number>   exact total xp for the week, mission xp included in it
-#       "bonus"    earn through 4x + 2x stages fully  -> 7667 total xp (2667 basic xp)
-#       "overload" earn all the way to overload        -> 11167 total xp (6167 basic xp)
-#       "rank"     earn exactly 5000 total xp (one rank's worth), mission xp included
+#   xp target  -> how much basic/bonus (curve) xp is earned that week, i.e.
+#       everything EXCEPT mission xp:
+#       <number>   exact basic/bonus-curve total xp for the week
+#       "bonus"    earn through 4x + 2x stages fully  -> 7667 curve xp (2667 basic xp)
+#       "overload" earn all the way to overload        -> 11167 curve xp (6167 basic xp)
+#       "rank"     earn exactly 5000 curve xp (one rank's worth)
 #
-# For every option, mission xp is credited first (it's "free"), and the
-# *target itself already includes mission xp* — so mission xp earned is
-# subtracted from the target before converting the remainder into basic xp.
-# To keep that subtraction sane, the target must be at least 2x the mission
-# xp earned (so the post-mission remainder is never smaller than the mission
-# xp itself). "bonus" and "overload" always clear this automatically; only a
-# manually typed number (or "rank" with a high mission multiplier) can hit it.
+# Mission xp is always earned ON TOP of the xp target — it's "free" and never
+# eats into the curve target. So "overload" always means 6167 basic xp /
+# 11167 curve xp for the week, PLUS whatever mission xp that week's
+# multiplier earns; the week's total gain is curve_xp + mission_xp.
 
 MISSION_MULT_OPTIONS = (0, 1, 2, 3)
 
@@ -817,33 +821,26 @@ def mission_earned_for_mult(week, mult):
     return min(earned, mm)
 
 def resolve_xp_target(xp_arg, week, mission_mult):
-    """Resolve the user's xp choice into a total-xp-for-the-week number.
+    """Resolve the user's xp choice into a basic/bonus curve-xp-for-the-week
+    number (mission xp is NOT part of this — it's added separately, on top).
 
-    xp_arg: an int/float (explicit total xp) or one of "bonus" / "overload" / "rank".
-    Returns (total_xp, error_message_or_None).
+    xp_arg: an int/float (explicit curve xp) or one of "bonus" / "overload" / "rank".
+    Returns (curve_xp, error_message_or_None).
     """
-    mission_earned = mission_earned_for_mult(week, mission_mult)
-
     if isinstance(xp_arg, str):
         key = xp_arg.lower()
         if key == "bonus":
-            total_xp = _bonus_total_xp()
+            curve_xp = _bonus_total_xp()
         elif key == "overload":
-            total_xp = _overload_total_xp()
+            curve_xp = _overload_total_xp()
         elif key == "rank":
-            total_xp = RANK_TARGET_XP
+            curve_xp = RANK_TARGET_XP
         else:
             return None, f"Unknown xp option '{xp_arg}'. Use a number, 'bonus', 'overload', or 'rank'."
     else:
-        total_xp = xp_arg
+        curve_xp = xp_arg
 
-    if total_xp < 2 * mission_earned:
-        return None, (
-            f"XP target ({int(total_xp)}) is too low for mission multiplier {mission_mult} "
-            f"(earns {mission_earned} mission xp this week). Target must be at least "
-            f"{2 * mission_earned} (2x the mission xp earned)."
-        )
-    return total_xp, None
+    return curve_xp, None
 
 def build_projection(data, mission_mult=3, xp_arg="overload"):
     """Project weekly data from the week after the last recorded one through
@@ -866,12 +863,11 @@ def build_projection(data, mission_mult=3, xp_arg="overload"):
         mm = mission_max(w)
         mission_a = mission_earned_for_mult(w, mission_mult)
 
-        total_xp, err = resolve_xp_target(xp_arg, w, mission_mult)
+        curve_xp, err = resolve_xp_target(xp_arg, w, mission_mult)
         if err:
             return {}, err
 
-        remaining      = max(0, total_xp - mission_a)
-        basic_uncapped = reverse_basic_from_total(remaining)
+        basic_uncapped = reverse_basic_from_total(curve_xp)
         basic          = int(min(basic_uncapped, BASIC_CAP))
         gained_basic, reduced, _ = compute_xp(basic)
 
@@ -902,8 +898,9 @@ def _ask_mission_mult():
 
 def _ask_xp_target():
     console.print(
-        "[dim]Weekly XP target: a number, or 'bonus' (7667 total / 2667 basic), "
-        "'overload' (11167 total / 6167 basic), 'rank' (5000 total)[/dim]"
+        "[dim]Weekly basic/bonus XP target (mission xp is earned separately, on top): "
+        "a number, or 'bonus' (7667 curve xp / 2667 basic), "
+        "'overload' (11167 curve xp / 6167 basic), 'rank' (5000 curve xp)[/dim]"
     )
     raw = input("XP target (default overload): ").strip().lower()
     if not raw:
@@ -1006,7 +1003,8 @@ HELP_COMMANDS = f"""[bold cyan]{APP_NAME}[/bold cyan] [dim]v{__version__}[/dim] 
 
   [cyan]update[/cyan] / [cyan]u[/cyan] / [cyan]upd[/cyan]
       Update week data. No argument: asks week, medal, rank, xp, mission.
-      Past weeks show a before/after preview before saving.
+      Current week saves immediately. Past weeks show a cascade preview and
+      ask for confirmation before saving (since they can affect later weeks).
       [cyan]-medal[/cyan] /[cyan]-med[/cyan]    Ask medal, rank, xp   (current week).
       [cyan]-rank[/cyan]  /[cyan]-r[/cyan]      Ask rank, xp           (current week).
       [cyan]-xp[/cyan]              Ask xp only            (current week).
@@ -1026,15 +1024,14 @@ HELP_COMMANDS = f"""[bold cyan]{APP_NAME}[/bold cyan] [dim]v{__version__}[/dim] 
       chosen weekly effort level. No argument: asks both choices below.
       [cyan]-mission N[/cyan]   Mission multiplier, N in 0-3 -> earns N/3 of that
                      week's mission cap. 0 = none, 3 = full.
-      [cyan]-xp VALUE[/cyan]    Weekly total XP target (mission xp included in it):
-                     a number, or one of:
+      [cyan]-xp VALUE[/cyan]    Weekly basic/bonus (curve) XP target — mission xp is
+                     earned separately, on top of this. A number, or one of:
                        [cyan]bonus[/cyan]     clear the 4x + 2x stages fully
-                                  ({_bonus_total_xp()} total xp / {BASIC_4X+BASIC_2X} basic xp)
+                                  ({_bonus_total_xp()} curve xp / {BASIC_4X+BASIC_2X} basic xp)
                        [cyan]overload[/cyan]  fill the entire weekly cap
-                                  ({_overload_total_xp():.0f} total xp / {BASIC_CAP} basic xp)
+                                  ({_overload_total_xp():.0f} curve xp / {BASIC_CAP} basic xp)
                        [cyan]rank[/cyan]      exactly one rank's worth
-                                  ({RANK_TARGET_XP} total xp)
-                     Must be at least 2x that week's mission xp earned.
+                                  ({RANK_TARGET_XP} curve xp)
       Examples: [cyan]p[/cyan]  [cyan]p -mission 3 -xp overload[/cyan]  [cyan]p -mission 0 -xp 4000[/cyan]
 
   [cyan]upgrade[/cyan] / [cyan]upg[/cyan]
