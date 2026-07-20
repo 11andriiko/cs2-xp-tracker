@@ -24,7 +24,7 @@ console = Console()
 # ═══════════════════════════════════════════
 
 APP_NAME    = "CS2 XP Tracker"
-__version__ = "0.1.0-alpha"
+__version__ = "0.1.1-alpha"
 
 GITHUB_OWNER = "11andriiko"
 GITHUB_REPO  = "cs2-xp-tracker"
